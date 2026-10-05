@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+hangul-bookmark/runtime/
+hangul-bookmark/reports/
+hangul-bookmark/.mcp.json
+hangul-bookmark/mcp.json
+hangul-bookmark/security/*.dll
+*.sqlite*
+*.hwp
+*.hwpx
+*.zip

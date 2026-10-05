@@ -1,0 +1,8 @@
+{
+  "name": "hangul-bookmark",
+  "version": "0.2.1",
+  "description": "한글 책갈피에 본문과 수식을 작성하는 로컬 Windows 도구",
+  "interface": {"displayName": "Hangul Bookmark Writer"},
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}
