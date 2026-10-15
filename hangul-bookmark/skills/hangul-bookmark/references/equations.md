@@ -5,11 +5,11 @@
 | 표기 | LaTeX | 한글 스크립트 |
 |---|---|---|
 | 분수 | `\frac{a}{b}` | `{a} over {b}` |
-| 첨자 | `x_{i}^{2}` | `x_{i}^{2}` |
+| 첨자 | `x_{i}^{2}` | `x_{i} ^{2} ` |
 | 제곱근 | `\sqrt{x}` | `sqrt {x}` |
 | n제곱근 | `\sqrt[n]{x}` | `root {n} of {x}` |
-| 합 | `\sum_{i=1}^{n} i` | `sum _{i=1}^{n} i` |
-| 적분 | `\int_0^1 x dx` | `int _0^1 x dx` |
+| 합 | `\sum_{i=1}^{n} i` | `sum _{i=1} ^{n} i` |
+| 적분 | `\int_0^1 x dx` | `int _0 ^1 x dx` |
 | 괄호 | `\left( x \right)` | `LEFT ( x RIGHT )` |
 | 행렬 | `\begin{pmatrix}a&b\\c&d\end{pmatrix}` | `LEFT ( matrix {a & b # c & d} RIGHT )` |
 
@@ -18,3 +18,14 @@
 한글 API는 Bookmark action의 Name·Command(0 생성/1 이동), EquationCreate action의 String·BaseUnit을 사용한다. BaseUnit은 현재 글자 Height를 따른다. 누름틀 MoveToField와 혼용하지 않는다. 새로운 한글 버전은 실제 smoke 시험을 통과해야 한다.
 
 공식·원개발자 자료: [pyhwpx API](https://martiniifun.github.io/pyhwpx/core.html), [한컴 수식 API](https://forum.developer.hancom.com/t/topic/2882), [한컴 책갈피 API](https://forum.developer.hancom.com/t/topic/2040), [한컴 자동화](https://developer.hancom.com/hwpautomation).
+
+## 첨자 뒤 공백 (0.2.2)
+
+위첨자와 아래첨자의 묶음이 끝나면 공백 한 칸을 넣는다. 중괄호를 유지하며 중첩된 첨자에도 각각 적용한다. LaTeX 변환과 직접 한글 스크립트 입력 모두 연결 프로그램이 이 규칙을 적용한다.
+
+- `2^{2k}+1` → `2^{2k} +1`
+- `2^2k+1` → `2^2k +1`
+- `x_{i+1}+y` → `x_{i+1} +y`
+- `x_i^2+y` → `x_i ^2 +y`
+
+중괄호 없는 한글 첨자는 공백·연산자·다음 첨자 등 구분자까지를 묶음으로 읽는다. 여러 항이 들어가는 첨자는 중괄호로 명시한다. 이미 있는 뒤 공백은 한 칸으로 정리한다. 큰따옴표 안의 문자 그대로의 ^와 _는 바꾸지 않으며 일반 본문 블록도 바꾸지 않는다.

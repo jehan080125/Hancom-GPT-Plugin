@@ -80,6 +80,61 @@ class Parser:
         if end: self.fail("중괄호가 닫히지 않았습니다")
         return "".join(out)
 
+
+def space_after_scripts(script):
+    """Terminate each HWP superscript/subscript operand with one space.
+
+    Braced operands use their matching closing brace; unbraced HWP operands
+    continue to whitespace, an operator, or another structural delimiter.
+    Quoted HWP text is opaque, including any literal ^ or _ inside it.
+    """
+    pairs, stack, opaque = {}, [], set()
+    i = 0
+    while i < len(script):
+        c = script[i]
+        if c == '"':
+            end = script.find('"', i + 1)
+            end = len(script) - 1 if end < 0 else end
+            opaque.update(range(i, end + 1))
+            i = end + 1
+            continue
+        if c == '{': stack.append(i)
+        elif c == '}' and stack: pairs[stack.pop()] = i
+        i += 1
+
+    ends = set()
+    delimiters = set('^_{}+-=<>*/(),;[]|&#' + '−±×÷≤≥≠')
+    for i, c in enumerate(script):
+        if c not in '^_' or i in opaque: continue
+        start = i + 1
+        while start < len(script) and script[start].isspace(): start += 1
+        if start == len(script):
+            raise WriterError("INVALID_EQUATION", "첨자 내용이 없습니다.")
+        if script[start] == '{':
+            if start not in pairs:
+                raise WriterError("INVALID_EQUATION", "첨자 중괄호가 맞지 않습니다.")
+            end = pairs[start] + 1
+        elif script[start] == '"':
+            end = start + 1
+            while end < len(script) and end in opaque: end += 1
+        else:
+            end = start
+            if script[end] in '+-−': end += 1
+            operand_start = end
+            while end < len(script) and not script[end].isspace() and script[end] not in delimiters and end not in opaque:
+                end += 1
+            if end == operand_start:
+                raise WriterError("INVALID_EQUATION", "첨자 내용은 중괄호로 묶어 전달하세요.")
+        ends.add(end)
+
+    out, i = [], 0
+    while i < len(script):
+        out.append(script[i]); i += 1
+        if i in ends:
+            out.append(' ')
+            while i < len(script) and script[i].isspace(): i += 1
+    return ''.join(out)
+
 def validate_script(script):
     if not isinstance(script, str) or not script.strip():
         raise WriterError("INVALID_EQUATION", "빈 수식은 작성할 수 없습니다.")
@@ -91,7 +146,10 @@ def validate_script(script):
         elif c == "}": depth -= 1
         if depth < 0: raise WriterError("INVALID_EQUATION", "수식 중괄호가 맞지 않습니다.")
     if depth: raise WriterError("INVALID_EQUATION", "수식 중괄호가 맞지 않습니다.")
-    return script
+    result = space_after_scripts(script)
+    if len(result) > 20000:
+        raise WriterError("INVALID_EQUATION", "공백 처리 후 수식이 20,000자를 초과합니다.")
+    return result
 
 def convert(source):
     if not isinstance(source, str) or len(source) > 20000:

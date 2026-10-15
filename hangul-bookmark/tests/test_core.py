@@ -10,7 +10,7 @@ from hangul_bookmark import xmlcheck
 @pytest.mark.parametrize('latex,script', [
     (r'\frac{a}{b}', '{a} over {b}'),
     (r'\sqrt[3]{x}', 'root {3} of {x}'),
-    (r'x_{i}^{2}', 'x_{i}^{2}'),
+    (r'x_{i}^{2}', 'x_{i} ^{2} '),
     (r'\begin{pmatrix}a&b\\c&d\end{pmatrix}', 'LEFT ( matrix {a & b # c & d} RIGHT )'),
 ])
 def test_math(latex,script): assert convert(latex)==script
