@@ -52,6 +52,7 @@ class Runner:
             return self.live_worker(job)
         with tempfile.TemporaryDirectory(prefix='job-', dir=self.state) as temp:
             env = os.environ.copy(); env['HANGUL_PID_FILE'] = str(Path(temp) / 'pid')
+            env['HANGUL_COM_CACHE_DIR'] = temp
             env['PYTHONIOENCODING'] = 'utf-8'
             # The launcher adds local dependency directories to PYTHONPATH.
             src = str(Path(__file__).resolve().parents[1])
@@ -79,7 +80,9 @@ class Runner:
             if not result.get('ok'): raise WriterError(result.get('error', 'HANCOM_FAILED'), result.get('message', '한글 작업 실패'))
             return result
 
-class Service:
+from .editing import EditingService
+
+class Service(EditingService):
     def __init__(self, state, runner=None, dialogs=None):
         self.state = Path(state).resolve(); self.state.mkdir(parents=True, exist_ok=True)
         self.runner = runner or Runner(self.state)
@@ -92,6 +95,7 @@ class Service:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS requests (doc TEXT, id TEXT, hash TEXT, status TEXT, data TEXT, PRIMARY KEY(doc,id))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS analyses (doc TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.commit()
 
     def close(self):
@@ -110,7 +114,7 @@ class Service:
     def check_environment(self, run_smoke=True):
         with self.lock:
             env = self.runner({'operation': 'environment'})
-            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py')).encode()).hexdigest()
+            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py')).encode()).hexdigest()
             fingerprint = dumps({'version': env['version'], 'application': env.get('application'), 'connector': __version__, 'code': code_hash, 'module': env['security_module']})
             cache = self.state / 'compatibility.json'
             previous = json.loads(cache.read_text('utf-8')) if cache.exists() else {}
@@ -171,7 +175,7 @@ class Service:
         doc = {'document_id': str(uuid.uuid4()), 'mode': 'open', 'target': selected['target'],
                'window_id': window_id, 'title': selected['title'], 'file': selected['file'],
                'active': selected['file'], 'output': None, 'bookmark': None,
-               'bookmarks': report['bookmarks'], 'version': report['version'], 'saved': False}
+               'bookmarks': report['bookmarks'], 'version': report['version'], 'saved': False, 'selection': report.get('selection')}
         with self.db: self._put(doc)
         return {'ok': True, **{k: v for k, v in doc.items() if k != 'target'},
                 'modified': report['modified'], 'security_module': report['security_module']}
@@ -211,7 +215,9 @@ class Service:
             if path.exists():
                 result = json.loads(path.read_text('utf-8'))
                 if result.get('ok'):
-                    result.update(document_id=doc['document_id'], request_id=request_id, bookmark=data['bookmark'], counts=data['counts'])
+                    result.update(document_id=doc['document_id'], request_id=request_id)
+                    result.setdefault('bookmark',data.get('bookmark'))
+                    result.setdefault('counts',data.get('counts',{}))
                     with self.db:
                         self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?', ('done', dumps({'result': result}), doc['document_id'], request_id))
                     return dict(result, replayed=True, recovered=True)

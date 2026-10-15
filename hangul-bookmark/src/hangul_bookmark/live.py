@@ -111,11 +111,15 @@ def native_bytes(data):
 
 def inspect(target):
     h, d = attach(target)
+    from .native_edit import capture
+    selection=capture(h.hwp)
     try:
         if int(d.EditMode) != 1:
             raise WriterError('READ_ONLY_DOCUMENT', '읽기 전용·배포용·양식 모드 문서는 직접 작성할 수 없습니다.')
-        return {'ok': True, 'bookmarks': xmlcheck.bookmarks(h.xml()), 'version': h.version,
-                'security_module': h.module, 'modified': bool(d.Modified), 'file': target['path'] or None}
+        from .document import revision
+        xml=h.xml();selection['revision']=revision(xml)
+        return {'ok': True, 'bookmarks': xmlcheck.bookmarks(xml), 'version': h.version,
+                'security_module': h.module, 'modified': bool(d.Modified), 'file': target['path'] or None, 'selection': selection}
     finally: pass  # Keep the exact borrowed connection alive across tool calls.
 
 def write(job):
@@ -185,8 +189,74 @@ def write(job):
         raise
     finally: pass  # Released by the persistent STA worker, never Quit/Clear.
 
+
+def read_document(job):
+    from . import native_edit
+    h,d=attach(job['target'])
+    guard=edit_guard(h,d,job)
+    guard()
+    return {'ok':True,'document':native_edit.inspect(h,selection=job.get('selection') or {},validate_target=guard)}
+
+def edit_guard(h,d,job):
+    def guard():
+        if int(h.hwp.XHwpDocuments.Active_XHwpDocument.DocumentID)!=job['target']['native_id'] or str(d.FullName or '')!=job['target']['path']:
+            raise WriterError('OPEN_DOCUMENT_CHANGED','활성 문서나 파일 연결이 바뀌었습니다. 다시 선택하세요.')
+        event=job.get('_cancelled')
+        if event is not None and event.is_set():raise WriterError('HANCOM_TIMEOUT','시간 초과 후 추가 작업을 중단했습니다.')
+    return guard
+
+def edit(job):
+    from . import native_edit,document as dm
+    h,d=attach(job['target']);guard=edit_guard(h,d,job)
+    changed=False;original=None
+    try:
+        guard()
+        if int(d.EditMode)!=1:raise WriterError('READ_ONLY_DOCUMENT','일반 편집 문서만 수정할 수 있습니다.')
+        original=native_edit.capture(h.hwp)
+        before=native_edit.inspect(h,validate_target=guard)
+        if before['revision']!=job['revision']:raise WriterError('STALE_REVISION','분석 이후 문서가 변경됐습니다. 다시 읽으세요.')
+        native_edit.enrich_selection(before,original)
+        before['targets']=job['targets'];ops=dm.compile_edits(before,job['edits'])
+        native_edit.validate_fonts(ops)
+        backup=Path(job['backup']);backup.write_bytes(native_bytes(h.hwp.get_text_file('HWP','')))
+        stage=Path(job['stage']);stage.write_bytes(backup.read_bytes())
+        trial=Hancom(visible=False)
+        try:
+            trial_report=native_edit.execute(trial,dict(job,path=str(stage)))
+        finally:
+            trial.close()
+            if os.environ.get('HANGUL_PID_FILE'):Path(os.environ['HANGUL_PID_FILE']).unlink(missing_ok=True)
+        guard()
+        if dm.revision(h.xml())!=job['revision']:raise WriterError('EXTERNAL_CHANGE','임시 시험 중 문서가 수정됐습니다. 다시 읽으세요.')
+        if job.get('dry_run'):
+            native_edit.restore(h.hwp,original)
+            return dict(trial_report,mode='open',saved=False,output=None,dry_run=True,edits=job['edits'],backup=None)
+        guard();changed=True
+        report=native_edit.apply_native(h,before,ops,job.get('_cancelled'),guard)
+        guard();d.Modified=1
+        result=dict(report,ok=True,mode='open',saved=False,output=None,backup=str(backup),file=job['target']['path'] or None,version=h.version)
+        report['verification']['in_memory']=True;report['verification']['reopened']=False
+        receipt(job['receipt'],result)
+        return result
+    except Exception as e:
+        if changed:
+            error=WriterError('LIVE_RECOVERY_REQUIRED','열린 문서가 일부 수정됐을 수 있습니다. 저장하지 않았습니다. 반복 요청하지 말고 작업 전 백업을 확인하세요: '+job['backup'])
+            receipt(job['receipt'],dict(error.result(),backup=job['backup'],detail=str(e)))
+            raise error from e
+        if original is not None:
+            try:guard();native_edit.restore(h.hwp,original)
+            except Exception:pass
+        raise
+
+
 def handle(job):
     if job['operation'] == 'open_list': return {'ok': True, 'documents': list_documents()}
     if job['operation'] == 'open_inspect': return inspect(job['target'])
     if job['operation'] == 'open_write': return write(job)
+    if job['operation'] == 'open_revision':
+        from .document import revision
+        h,d=attach(job['target']);edit_guard(h,d,job)()
+        return {'ok':True,'revision':revision(h.xml())}
+    if job['operation'] == 'open_read': return read_document(job)
+    if job['operation'] == 'open_edit': return edit(job)
     raise WriterError('INVALID_OPERATION', '허용되지 않은 열린 문서 작업입니다.')

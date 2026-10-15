@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hangul-bookmark"
-version = "0.2.2"
-description = "Local bookmark-based Hancom document writer for Codex"
+version = "0.3.0"
+description = "Local Hancom document reader and editor for Codex"
 requires-python = ">=3.10"
 dependencies = ["pyhwpx==1.7.2; sys_platform == 'win32'", "mcp==2.3.0", "Pillow>=10,<13"]
 

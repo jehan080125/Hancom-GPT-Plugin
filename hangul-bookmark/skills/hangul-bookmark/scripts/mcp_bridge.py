@@ -1,4 +1,4 @@
-"""Call the installed five MCP tools in one persistent session from a JSON job."""
+"""Call the installed eight MCP tools in one persistent session from a JSON job."""
 import argparse
 import asyncio
 import json
@@ -6,14 +6,14 @@ import os
 from pathlib import Path
 import site
 
-TOOLS={'check_environment','select_document','select_bookmark','preview_content','insert_content'}
+TOOLS={'check_environment','select_document','select_bookmark','preview_content','insert_content','read_document','find_targets','apply_edits'}
 
 def resolve(value, results):
     if isinstance(value,dict):
         if set(value)=={'$ref'}:
             parts=value['$ref'].split('.')
             current=results[parts[0]]
-            for part in parts[1:]: current=current[part]
+            for part in parts[1:]: current=current[int(part)] if isinstance(current,list) else current[part]
             return current
         return {k:resolve(v,results) for k,v in value.items()}
     if isinstance(value,list): return [resolve(v,results) for v in value]
@@ -48,11 +48,11 @@ def main():
     site.addsitedir(config['env']['HANGUL_DEPS'])
     job=json.loads(args.job.read_text('utf-8-sig'))
     if not isinstance(job,list) or not job or any(s.get('tool') not in TOOLS or not isinstance(s.get('id'),str) for s in job):
-        parser.error('Job must be a nonempty list of named steps using the five plugin tools')
+        parser.error('Job must be a nonempty list of named steps using the eight plugin tools')
     if len({s['id'] for s in job})!=len(job): parser.error('Step IDs must be unique')
     for s in job:
-        if s['tool']=='insert_content' and not s.get('arguments',{}).get('request_id'):
-            parser.error('insert_content requires a persistent request_id')
+        if s['tool'] in ('insert_content','apply_edits') and not s.get('arguments',{}).get('request_id'):
+            parser.error('Mutation requires a persistent request_id')
     if args.result.exists(): parser.error('Result already exists; inspect it before any retry')
     args.result.parent.mkdir(parents=True,exist_ok=True)
     raise SystemExit(asyncio.run(run(job,config,args.result.resolve(),root)))

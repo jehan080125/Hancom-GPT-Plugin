@@ -17,6 +17,8 @@ _sta = threading.local()
 
 def initialize_sta():
     if not getattr(_sta, 'ready', False):
+        from .com_runtime import prepare
+        prepare()
         import pythoncom
         pythoncom.CoInitialize()
         _sta.ready = True
@@ -237,7 +239,8 @@ class Hancom:
             second = xmlcheck.snapshot(self.xml())
             check(second['text'].find('두 번째 ') < second['text'].find('새 내용 '), '반복 삽입 순서가 다릅니다.')
             output.append({'format': suffix, 'ok': True, **report})
-        return {'ok': True, 'version': self.version, 'security_module': self.module, 'smoke': output}
+        from .native_edit import smoke as edit_smoke
+        return {'ok': True, 'version': self.version, 'security_module': self.module, 'smoke': output, 'edit_smoke':edit_smoke(self,directory)}
 
 def main():
     job = json.load(sys.stdin)
@@ -258,6 +261,12 @@ def main():
                           'smoke_tested': False}
             elif op == 'inspect': result = {'ok': True, **backend.inspect(job['path'])}
             elif op == 'write': result = {'ok': True, **backend.write(job['path'], job['bookmark'], job['blocks'])}
+            elif op == 'read_document':
+                from .native_edit import inspect
+                backend.open(job['path']);result={'ok':True,'document':inspect(backend,selection={})}
+            elif op == 'apply_edits':
+                from .native_edit import execute
+                result=execute(backend,job)
             elif op == 'smoke': result = backend.smoke(job['directory'])
             else: raise WriterError('INVALID_OPERATION', '허용되지 않은 작업입니다.')
     except WriterError as e: result = e.result()
