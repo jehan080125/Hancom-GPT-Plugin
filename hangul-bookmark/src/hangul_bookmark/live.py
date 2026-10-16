@@ -257,6 +257,9 @@ def handle(job):
         from .document import revision
         h,d=attach(job['target']);edit_guard(h,d,job)()
         return {'ok':True,'revision':revision(h.xml())}
+    if job['operation'] == 'open_image':
+        from .images import read_native
+        h,d=attach(job['target']);return read_native(h,job,edit_guard(h,d,job))
     if job['operation'] == 'open_read': return read_document(job)
     if job['operation'] == 'open_edit': return edit(job)
     raise WriterError('INVALID_OPERATION', '허용되지 않은 열린 문서 작업입니다.')

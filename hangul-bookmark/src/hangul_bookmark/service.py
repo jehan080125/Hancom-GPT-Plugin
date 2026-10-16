@@ -114,7 +114,7 @@ class Service(EditingService):
     def check_environment(self, run_smoke=True):
         with self.lock:
             env = self.runner({'operation': 'environment'})
-            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py')).encode()).hexdigest()
+            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py', 'images.py')).encode()).hexdigest()
             fingerprint = dumps({'version': env['version'], 'application': env.get('application'), 'connector': __version__, 'code': code_hash, 'module': env['security_module']})
             cache = self.state / 'compatibility.json'
             previous = json.loads(cache.read_text('utf-8')) if cache.exists() else {}

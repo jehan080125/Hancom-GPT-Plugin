@@ -1,12 +1,14 @@
-"""Call the installed eight MCP tools in one persistent session from a JSON job."""
+"""Call the installed nine MCP tools in one persistent session from a JSON job."""
 import argparse
+import base64
+import hashlib
 import asyncio
 import json
 import os
 from pathlib import Path
 import site
 
-TOOLS={'check_environment','select_document','select_bookmark','preview_content','insert_content','read_document','find_targets','apply_edits'}
+TOOLS={'check_environment','select_document','select_bookmark','preview_content','insert_content','read_document','find_targets','apply_edits','read_image'}
 
 def resolve(value, results):
     if isinstance(value,dict):
@@ -32,6 +34,14 @@ async def run(job,config,report,root):
             report.write_text(json.dumps({'completed':results,'pending':step['id'],'tool':step['tool'],'arguments':arguments},ensure_ascii=False,indent=2),encoding='utf-8')
             response=await client.call_tool(step['tool'],arguments)
             data=response.structured_content or json.loads(response.content[0].text)
+            image_paths=[]
+            for index,block in enumerate(response.content):
+                if block.type=='image':
+                    folder=report.parent/(report.stem+'-images');folder.mkdir(exist_ok=True)
+                    name=hashlib.sha256(step['id'].encode()).hexdigest()[:20]+'-'+str(index)+'.png'
+                    path=folder/name;path.write_bytes(base64.b64decode(block.data,validate=True))
+                    image_paths.append(str(path.resolve()))
+            if image_paths:data['image_paths']=image_paths
             results[step['id']]=data
             report.write_text(json.dumps({'completed':results,'pending':None},ensure_ascii=False,indent=2),encoding='utf-8')
             print(json.dumps({'step':step['id'],'result':data},ensure_ascii=False),flush=True)
@@ -48,7 +58,7 @@ def main():
     site.addsitedir(config['env']['HANGUL_DEPS'])
     job=json.loads(args.job.read_text('utf-8-sig'))
     if not isinstance(job,list) or not job or any(s.get('tool') not in TOOLS or not isinstance(s.get('id'),str) for s in job):
-        parser.error('Job must be a nonempty list of named steps using the eight plugin tools')
+        parser.error('Job must be a nonempty list of named steps using the nine plugin tools')
     if len({s['id'] for s in job})!=len(job): parser.error('Step IDs must be unique')
     for s in job:
         if s['tool'] in ('insert_content','apply_edits') and not s.get('arguments',{}).get('request_id'):

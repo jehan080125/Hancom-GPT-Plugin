@@ -1,8 +1,10 @@
 {
   "name": "hangul-bookmark",
-  "version": "0.3.0",
-  "description": "한글 문서를 읽고 문장·수식·글꼴·크기를 수정하는 로컬 Windows 도구",
-  "interface": {"displayName": "Hangul Bookmark Writer"},
+  "version": "0.4.0",
+  "description": "한글 문서의 사진·수식·본문을 읽고 문장·서식을 수정하는 로컬 Windows 도구",
+  "interface": {
+    "displayName": "Hangul Bookmark Writer"
+  },
   "skills": "./skills/",
   "mcpServers": "./.mcp.json"
 }

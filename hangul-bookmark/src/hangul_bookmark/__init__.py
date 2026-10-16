@@ -1,5 +1,5 @@
 """Bookmark-based Hancom writer. Imports do not launch Hancom."""
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 import os
 import site
 import sys

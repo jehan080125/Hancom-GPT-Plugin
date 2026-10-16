@@ -264,6 +264,9 @@ def main():
             elif op == 'read_document':
                 from .native_edit import inspect
                 backend.open(job['path']);result={'ok':True,'document':inspect(backend,selection={})}
+            elif op == 'read_image':
+                from .images import read_native
+                backend.open(job['path']);result=read_native(backend,job)
             elif op == 'apply_edits':
                 from .native_edit import execute
                 result=execute(backend,job)

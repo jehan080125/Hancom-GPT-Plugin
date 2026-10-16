@@ -22,6 +22,9 @@ def digest(obj):
 def revision(xml):
     root = xmlcheck.parse(xml)
     for parent in root.iter():
+        # Hancom 2022 can vary the exported encoded-length hint without changing
+        # embedded bytes. Keep the full data in the hash; ignore only this hint.
+        if xmlcheck.tag(parent)=='BINDATA':parent.attrib.pop('Size',None)
         for child in list(parent):
             if xmlcheck.tag(child) in ('DOCSUMMARY','DOCSETTING'): parent.remove(child)
     return digest(xmlcheck.ET.tostring(root,encoding='unicode'))
@@ -99,6 +102,9 @@ def model(xml):
                     if kind not in ('TEXT',):
                         p['parts'].append({'kind':'control','id':uid(rev,path2),'start':position,'end':position+8,'type':kind,
                                           'value':None if kind=='TABLE' else canonical(n,('InstId',))})
+                        if kind=='PICTURE':
+                            from .images import descriptor
+                            p['parts'][-1]['image']=descriptor(n,root)
                         position+=8;return
                 for i,c in enumerate(n): inline(c,style,path2+'/'+str(i))
             for i,c in enumerate(node): inline(c,{},path+'/'+str(i))
@@ -157,6 +163,10 @@ def locate(doc,selector):
                 if col is not None and not cell['column']<=col<cell['column']+cell['column_span']:continue
                 found=True
             if found: hits.append({'target_id':p['id'],'kind':'range','paragraph':p['index'],'text':p['text'],'cell_path':p['cell_path']})
+        elif kind=='image':
+            for part in p['parts']:
+                if part.get('type')=='PICTURE':
+                    hits.append({'target_id':part['id'],'kind':'image','paragraph':p['index'],'cell_path':p['cell_path'],'embedded':part['image']['embedded'],'format':part['image']['format']})
         elif kind=='paragraph':
             if p['id']==selector.get('target_id') or p['index']==selector.get('index'):hits.append({'target_id':p['id'],'kind':'range','text':p['text']})
         elif kind in ('text','equation'):

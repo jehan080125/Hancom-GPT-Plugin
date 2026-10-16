@@ -1,7 +1,15 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hangul-bookmark",
-  "version": "0.3.0",
-  "description": "한글 문서를 읽고 본문·표·수식·글꼴·크기를 수정하거나 책갈피에 내용을 작성합니다.",
-  "extensions": {"com.openai": {"interface": {"displayName": "Hangul Bookmark Writer", "shortDescription": "한글 문서 읽기·범위 수정·글꼴·수식 크기 변경", "category": "Productivity"}}}
+  "version": "0.4.0",
+  "description": "한글 문서의 사진·수식·본문을 읽고 문장·서식을 수정하는 로컬 Windows 도구",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Hangul Bookmark Writer",
+        "shortDescription": "한글 문서·사진 읽기와 본문·수식 편집",
+        "category": "Productivity"
+      }
+    }
+  }
 }

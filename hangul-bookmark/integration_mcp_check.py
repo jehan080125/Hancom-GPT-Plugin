@@ -27,7 +27,7 @@ async def run(root,out):
     original=digest(source);owner=None
     async with Client(StdioServerParameters(command=config['command'],args=args,env=env,cwd=root)) as client:
         listing=await client.list_tools()
-        assert {t.name for t in listing.tools}=={'check_environment','select_document','select_bookmark','preview_content','insert_content','read_document','find_targets','apply_edits'}
+        assert {t.name for t in listing.tools}=={'check_environment','select_document','select_bookmark','preview_content','insert_content','read_document','find_targets','apply_edits','read_image'}
         async def call(name,**kw):
             result=await client.call_tool(name,kw)
             data=result.structured_content or json.loads(result.content[0].text)

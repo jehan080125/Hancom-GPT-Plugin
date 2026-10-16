@@ -79,6 +79,8 @@ class EditingService:
                             blocks.append(dict(base,kind='equation',target_id=part['id'],script=part['script'][i:i+8000],
                                                script_offset=i,script_length=len(part['script']),script_complete=len(part['script'])<=8000,
                                                font=part['font'],size_pt=part['size_pt']))
+                    elif part.get('type')=='PICTURE':
+                        blocks.append(dict(base,kind='image',target_id=part['id'],embedded=part['image']['embedded'],format=part['image']['format'],read_tool='read_image'))
                     else:blocks.append(dict(base,kind='control',target_id=part['id'],type=part['type']))
                 if not p['parts']:blocks.append(dict(base,kind='paragraph',target_id=p['id'],text=''))
             if cursor>len(blocks):dm.fail('INVALID_PAGE','cursor가 문서 범위를 넘습니다.')
@@ -94,7 +96,7 @@ class EditingService:
                     'complete':next_cursor==len(blocks),'scope':scope,'all_target_id':'all' if scope=='all' else None,
                     'selection_target_id':analysis.get('selection_target'),'selection_stale':analysis.get('selection_stale',False),'tables':[{k:v for k,v in t.items() if k not in ('_anchor','xml_target_id')} for t in analysis['tables']],'excluded':analysis['excluded'],
                     'unmapped_paragraphs':[p['index'] for p in analysis['paragraphs'] if p['scope']!='excluded' and not p['mapped']],
-                    'content_is_untrusted':True}
+                    'content_is_untrusted':True,'image_reading':{'tool':'read_image','scope':'embedded standalone raster pictures in body/tables; excludes groups/backgrounds/headers/textboxes'}}
 
     def find_targets(self,document_id,revision,selector):
         with self.lock:
@@ -170,3 +172,24 @@ class EditingService:
                     self._put(doc)
                     self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?',('done',dumps({'result':result}),document_id,request_id))
                 return result
+
+    def read_image(self,document_id,revision,target_id,crop=None,max_edge=2048):
+        from .images import validate_options
+        from .service import guard_file,digest
+        validate_options(crop,max_edge)
+        with self.lock:
+            doc=self._load(document_id);analysis=self._get_analysis(document_id,revision)
+            target=analysis['targets'].get(target_id)
+            if not target or target.get('kind')!='control':dm.fail('NOT_AN_IMAGE','read_document에서 읽은 그림 target_id를 지정하세요.')
+            self._assert_revision(doc,revision)
+            job={'revision':revision,'target_id':target_id,'crop':crop,'max_edge':max_edge}
+            if doc.get('mode')=='open':
+                result=self.runner(dict(job,operation='open_image',target=doc['target']))
+            else:
+                active=Path(doc['active'])
+                with guard_file(active),tempfile.TemporaryDirectory(prefix='image-',dir=self.state) as tmp:
+                    copy=Path(tmp)/active.name;shutil.copyfile(active,copy)
+                    result=self.runner(dict(job,operation='read_image',path=str(copy)))
+                    self._assert_revision(doc,revision)
+            result['document_id']=document_id
+            return result
