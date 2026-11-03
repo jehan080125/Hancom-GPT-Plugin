@@ -75,7 +75,7 @@ def main():
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
     def apply_edits(document_id: str, revision: str, request_id: str, edits: list[dict], dry_run: bool = False) -> dict:
-        """Bounded changes using read/find target IDs. replace_text{target_id,expected_text,text}; replace_equation{target_id,expected_script,script,format:latex|hwp}; set_format{target_id,properties:{font_name?,size_pt?,equation_font?,equation_size_pt?}}. No paragraph/table restructuring. dry_run validates a scratch copy only. Open windows are NOT saved. Reuse request_id after uncertain results; never blindly retry partial live changes."""
+        """Prefer bookmark-free insertion into designated empty cells: insert_blocks{target_id:empty_paragraph_id,expected_text:'',blocks:[text|paragraph_break|equation]}. Several empty cells may be filled together; do not mix insertion with other edit types. Also supports replace_text, replace_equation and set_format. No table restructuring. Never create bookmarks as an insertion workaround. dry_run validates a scratch copy only. Open windows are NOT saved. Reuse request_id after uncertain results."""
         return invoke(service.apply_edits, document_id, revision, request_id, edits, dry_run)
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))

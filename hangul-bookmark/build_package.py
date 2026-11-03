@@ -1,8 +1,9 @@
 """Create source package; runtime dependencies installed by setup.ps1 are excluded."""
 from pathlib import Path
 import zipfile
+import shutil
 root=Path(__file__).resolve().parent
-target=root.parent/'hangul-bookmark-package.zip'
+target=root.parent/'hancom-agent-package.zip'
 with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob('*'):
         rel=p.relative_to(root)
@@ -12,4 +13,5 @@ with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
     z.write(root.parent/'.agents/plugins/marketplace.json','.agents/plugins/marketplace.json')
 with zipfile.ZipFile(target) as z:
     assert z.testzip() is None
+shutil.copyfile(target,root.parent/'hangul-bookmark-package.zip')
 print(target)

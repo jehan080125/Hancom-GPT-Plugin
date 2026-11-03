@@ -227,6 +227,10 @@ def locate(doc,selector):
 
 def compile_edits(doc,edits):
     if not isinstance(edits,list) or not edits or len(edits)>1000:fail('INVALID_EDIT','1~1000개 변경이 필요합니다.')
+    if any(isinstance(e,dict) and e.get('type')=='insert_blocks' for e in edits):
+        if any(not isinstance(e,dict) for e in edits):fail('INVALID_EDIT','변경 항목은 객체여야 합니다.')
+        from .fill import compile_edits as compile_fill
+        return compile_fill(doc,edits)
     compiled=[]
     for edit in edits:
         if not isinstance(edit,dict):fail('INVALID_EDIT','변경 항목은 객체여야 합니다.')
@@ -341,6 +345,9 @@ def expected_atoms(doc,ops):
     return [[{k:v for k,v in a.items() if k not in ('start','end')} for a in aa] for aa in result]
 
 def verify_edit(before,after,ops):
+    if any(o['type']=='insert_blocks' for o in ops):
+        from .fill import verify
+        return verify(before,after,ops)
     if before['table_structure']!=after['table_structure']:fail('VERIFY_FAILED','기존 표 구조가 달라졌습니다.')
     if before['bookmarks']!=after['bookmarks']:fail('VERIFY_FAILED','책갈피 구성이 달라졌습니다.')
     if len(before['paragraphs'])!=len(after['paragraphs']):fail('VERIFY_FAILED','문단 개수가 달라졌습니다.')

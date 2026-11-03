@@ -244,6 +244,9 @@ def apply_native(hancom,before,ops,cancelled=None,validate_target=None):
         if cancelled is not None and cancelled.is_set():dm.fail('HANCOM_TIMEOUT','시간 초과 후 추가 수정을 중단했습니다.')
         if validate_target:validate_target()
     ready()
+    if any(o['type']=='insert_blocks' for o in ops):
+        from .fill import apply_native as fill_native
+        return fill_native(hancom,before,ops,ready)
     counts={'text_replacements':0,'equation_replacements':0,'formatted_text_ranges':0,'formatted_equations':0}
     content=[o for o in ops if o['type']!='set_format']
     for op in sorted(content,key=lambda o:(o['paragraph'],o['start']),reverse=True):

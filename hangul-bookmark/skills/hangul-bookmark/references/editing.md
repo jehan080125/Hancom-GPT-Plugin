@@ -36,6 +36,28 @@ find_targets(document_id, revision, selector)를 호출한다.
 
 ## 수정과 서식 변경
 
+### 책갈피 없는 빈칸 입력
+
+새 내용은 다음 방식으로 지정한 빈칸에 직접 입력하는 것을 우선한다. read_document의 kind=paragraph, text=""인 문단 또는 find_targets(type=table, table, row, column)로 찾은 빈 문단의 target_id를 사용한다. 한 칸에 여러 문단이 있으면 실제 입력할 빈 문단을 문맥으로 확정한다. 문단에 기존 글·수식·개체가 있으면 덮어쓰지 않는다.
+
+```json
+{
+  "document_id":"선택 결과 ID",
+  "revision":"읽기 결과 revision",
+  "request_id":"이번 요청의 UUID",
+  "edits":[
+    {"type":"insert_blocks","target_id":"빈 문단 ID","expected_text":"","blocks":[
+      {"type":"text","text":"문제와 풀이 "},
+      {"type":"equation","format":"latex","script":"x^{2}+1","display":"inline"},
+      {"type":"paragraph_break"},
+      {"type":"text","text":"다음 문단"}
+    ]}
+  ]
+}
+```
+
+여러 빈칸은 edits에 각각 넣어 한 번에 처리한다. insert_blocks는 같은 요청에서 기존 내용 교체·서식 변경과 섞지 않는다. 글·문단 구분·한글 수식 개체를 지원하며, 표 행·열·병합과 기존 책갈피를 유지한다. 입력 대상 이외의 내용·서식 보존을 검사한다. 파일 모드는 수정본 저장 및 재열기 검증을, 열린 창 모드는 사본 시험 후 저장하지 않는 변경을 수행한다. 새 책갈피는 만들지 않는다. 기존 내용이 있거나 위치·revision이 달라지면 실패하며, 다시 읽어 대상을 확인한다.
+
 ```json
 {
   "document_id":"선택 결과 ID",
