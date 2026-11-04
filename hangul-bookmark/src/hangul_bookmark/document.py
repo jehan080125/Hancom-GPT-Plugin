@@ -1,4 +1,6 @@
 """Structured, revision-bound document model. Document text is untrusted data."""
+import base64
+import binascii
 import copy
 import hashlib
 import json
@@ -7,7 +9,8 @@ from .errors import WriterError
 from . import xmlcheck
 from .latex import convert, validate_script
 
-EXCLUDED = {'HEADER','FOOTER','FOOTNOTE','ENDNOTE','TEXTBOX','DRAWTEXT','MASTERPAGE'}
+EXCLUDED = {'HEADER','FOOTER','FOOTNOTE','ENDNOTE','TEXTBOX','DRAWTEXT','MASTERPAGE','CAPTION'}
+REGIONS={'HEADER','FOOTER','FOOTNOTE','ENDNOTE','PAGENUM','MEMO'}
 LANGS = ('Hangul','Latin','Hanja','Japanese','Other','Symbol','User')
 
 def fail(code, message):
@@ -54,21 +57,34 @@ def model(xml):
         charstyles[s.get('Id')]={'size_pt':int(s.get('Height','1000'))/100,'fonts':names,'other':canonical(others)}
     parastyles={s.get('Id'):canonical(s,('Id',)) for s in root.iter() if xmlcheck.tag(s)=='PARASHAPE'}
     styles={s.get('Id'):s.attrib for s in root.iter() if xmlcheck.tag(s)=='STYLE'}
-    paragraphs=[];tables=[];targets={};excluded={}
-    def walk(node,path,context,unsupported=False):
-        tag=xmlcheck.tag(node);unsupported=unsupported or tag in EXCLUDED
-        if tag in EXCLUDED: excluded[tag]=excluded.get(tag,0)+1
+    paragraphs=[];tables=[];targets={};excluded={};regions=[];picture_paths={}
+    image_hashes={}
+    for n in root.iter():
+        if xmlcheck.tag(n)=='BINDATA' and n.get('Encoding')=='Base64':
+            try:image_hashes[n.get('Id')]=hashlib.sha256(base64.b64decode(''.join((n.text or '').split()),validate=True)).hexdigest()
+            except (ValueError,binascii.Error):pass
+    def walk(node,path,context,unsupported=False,region=None):
+        tag=xmlcheck.tag(node)
+        region_type='MEMO' if tag=='FIELDBEGIN' and node.get('Type')=='Memo' else tag
+        unsupported=unsupported or region_type in EXCLUDED or region_type=='MEMO'
+        if region_type in EXCLUDED or region_type=='MEMO':
+            excluded[region_type]=excluded.get(region_type,0)+1
+            region={'kind':region_type,'path':path}
         if tag=='TABLE':
             number=0 if unsupported else len(tables)+1
             table={'number':number,'xml_target_id':uid(rev,path),'path':context+ [{'table':number}],'rows':int(node.get('RowCount','0')),'columns':int(node.get('ColCount','0'))}
-            if not unsupported:tables.append(table)
+            if not unsupported:
+                table_cells=[c for row in node if xmlcheck.tag(row)=='ROW' for c in row if xmlcheck.tag(c)=='CELL']
+                table['direct_geometry']=[dict(node.attrib),[dict(c.attrib) for c in table_cells]]
+                table['cell_attributes']=[[dict(c.attrib),next((dict(pl.attrib) for pl in c if xmlcheck.tag(pl)=='PARALIST'),{})] for c in table_cells]
+                tables.append(table)
             context=table['path']
         if tag=='CELL':
             context=context+[{'row':int(node.get('RowAddr','0'))+1,'column':int(node.get('ColAddr','0'))+1,
                               'row_span':int(node.get('RowSpan','1')),'column_span':int(node.get('ColSpan','1'))}]
         if tag=='P':
             p={'id':uid(rev,path),'path':path,'index':len(paragraphs),'scope':'excluded' if unsupported else ('table' if context else 'body'),
-               'cell_path':copy.deepcopy(context),'parts':[],'text':'','length':0,
+               'cell_path':copy.deepcopy(context),'region':region,'parts':[],'text':'','length':0,
                'paragraph_shape':parastyles.get(node.get('ParaShape')),'style':dict(styles.get(node.get('Style'),{})),
                'attributes':{k:v for k,v in node.attrib.items() if k not in ('InstId','ParaShape','Style')}}
             paragraphs.append(p)
@@ -102,9 +118,17 @@ def model(xml):
                     if kind not in ('TEXT',):
                         p['parts'].append({'kind':'control','id':uid(rev,path2),'start':position,'end':position+8,'type':kind,
                                           'value':None if kind=='TABLE' else canonical(n,('InstId',))})
+                        region_type='MEMO' if kind=='FIELDBEGIN' and n.get('Type')=='Memo' else kind
+                        if region_type in REGIONS and not unsupported:
+                            regions.append({'kind':region_type.lower(),'path':path2,'target_id':uid(rev,path2),
+                                            'paragraph_index':p['index'],'section':int(path.split('/')[1])+1,
+                                            'text':''.join(x.text or '' for x in n.iter() if xmlcheck.tag(x)=='CHAR'),
+                                            'properties':dict(n.attrib)})
                         if kind=='PICTURE':
+                            picture_paths[uid(rev,path2)]=path2
                             from .images import descriptor
                             p['parts'][-1]['image']=descriptor(n,root)
+                            p['parts'][-1]['image']['asset_hash']=image_hashes.get(p['parts'][-1]['image']['bin_id'])
                         position+=8;return
                 for i,c in enumerate(n): inline(c,style,path2+'/'+str(i))
             for i,c in enumerate(node): inline(c,{},path+'/'+str(i))
@@ -112,12 +136,12 @@ def model(xml):
             if not p['parts']:
                 first=next((c for c in node if xmlcheck.tag(c)=='TEXT'),None)
                 p['empty_style']=copy.deepcopy(charstyles.get(first.get('CharShape'),{})) if first is not None else {}
-        for i,c in enumerate(node): walk(c,path+'/'+str(i),context,unsupported)
+        for i,c in enumerate(node): walk(c,path+'/'+str(i),context,unsupported,region)
     body=next((n for n in root if xmlcheck.tag(n)=='BODY'),None)
     if body is None: fail('EXPORT_FAILED','본문 구조가 없습니다.')
     walk(body,'body',[])
-    result={'revision':rev,'paragraphs':paragraphs,'tables':tables,'excluded':excluded,
-            'table_structure':xmlcheck.snapshot(xml)['tables'],'bookmarks':xmlcheck.bookmarks(xml),'targets':targets}
+    result={'revision':rev,'paragraphs':paragraphs,'tables':tables,'regions':regions,'picture_paths':picture_paths,'excluded':excluded,
+            'table_structure':xmlcheck.snapshot(xml)['tables'],'border_definitions':{x.get('Id'):canonical(x,('Id',)) for x in root.iter() if xmlcheck.tag(x)=='BORDERFILL'},'style_names':[s['Name'] for s in styles.values() if 'Name' in s],'bookmarks':xmlcheck.bookmarks(xml),'targets':targets}
     for p in paragraphs:
         if p['scope']=='excluded': continue
         targets[p['id']]={'kind':'range','paragraph':p['index'],'start':0,'end':p['length']}
@@ -148,6 +172,21 @@ def add_target(doc,entry,key=None):
 def locate(doc,selector):
     if not isinstance(selector,dict): fail('INVALID_SELECTOR','selector 객체가 필요합니다.')
     kind=selector.get('type','text');hits=[]
+    if kind=='region':
+        hits=[{k:v for k,v in e.items() if k!='path'} for e in doc.get('regions',[])
+              if all(e[k]==selector[k] for k in ('kind','section') if k in selector)]
+        occurrence=selector.get('occurrence')
+        if occurrence is not None:
+            if type(occurrence)!=int or occurrence<1:fail('INVALID_SELECTOR','occurrence는 1 이상의 정수입니다.')
+            hits=hits[occurrence-1:occurrence]
+        return hits
+    if kind in ('caret','selected_object','table_object'):
+        if kind!='table_object':
+            key=doc.get('caret_target' if kind=='caret' else 'selected_object_target')
+            if not key:fail('SELECTION_MISSING','확인된 커서 또는 개체가 없습니다. 한글에서 지정한 뒤 문서를 다시 선택하세요.')
+            return [{'target_id':key,'kind':'anchor' if kind=='caret' else 'object'}]
+        return [{'target_id':t['xml_target_id'],'kind':'table','table':t['number'],'rows':t['rows'],'columns':t['columns']}
+                for t in doc['tables'] if selector.get('table',t['number'])==t['number']]
     if kind=='all': return [{'target_id':'all','kind':'group'}]
     if kind=='selection':
         if not doc.get('selection_target'): fail('SELECTION_MISSING','한글에서 범위를 선택한 뒤 문서를 다시 선택하세요.')
@@ -227,6 +266,9 @@ def locate(doc,selector):
 
 def compile_edits(doc,edits):
     if not isinstance(edits,list) or not edits or len(edits)>1000:fail('INVALID_EDIT','1~1000개 변경이 필요합니다.')
+    from .structure import KINDS,compile_batch
+    if any(isinstance(e,dict) and e.get('type') in KINDS for e in edits):
+        return compile_batch(doc,edits)
     if any(isinstance(e,dict) and e.get('type')=='insert_blocks' for e in edits):
         if any(not isinstance(e,dict) for e in edits):fail('INVALID_EDIT','변경 항목은 객체여야 합니다.')
         from .fill import compile_edits as compile_fill

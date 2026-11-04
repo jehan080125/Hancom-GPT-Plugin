@@ -91,6 +91,8 @@ class Hancom:
             del h
 
     def xml(self):
+        from .review import guard_hml
+        guard_hml(self)
         return self.hwp.get_text_file('HWPML2X', option='')
 
     def open(self, path):
@@ -131,7 +133,12 @@ class Hancom:
 
     def inspect(self, path):
         self.open(path)
-        return {'bookmarks': xmlcheck.bookmarks(self.xml()), 'version': self.version, 'security_module': self.module}
+        try:
+            bookmarks=xmlcheck.bookmarks(self.xml());review_only=False
+        except WriterError as e:
+            if e.code!='REVIEW_SNAPSHOT_REQUIRED':raise
+            bookmarks=[];review_only=True
+        return {'bookmarks':bookmarks,'version':self.version,'security_module':self.module,'review_only':review_only}
 
     def write(self, path, name, blocks):
         self.open(path)
@@ -264,6 +271,9 @@ def main():
             elif op == 'read_document':
                 from .native_edit import inspect
                 backend.open(job['path']);result={'ok':True,'document':inspect(backend,selection={})}
+            elif op == 'read_review':
+                from .review import inspect as inspect_review
+                backend.open(job['path']);result={'ok':True,'document':inspect_review(backend)}
             elif op == 'read_image':
                 from .images import read_native
                 backend.open(job['path']);result=read_native(backend,job)

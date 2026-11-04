@@ -1,6 +1,6 @@
 {
   "name": "hangul-bookmark",
-  "version": "0.5.0",
+  "version": "0.6.0-dev.1",
   "description": "한글 문서와 사진을 읽고, 본문·수식·서식을 편집하는 AI 도우미",
   "interface": {
     "displayName": "Hancom Agent"

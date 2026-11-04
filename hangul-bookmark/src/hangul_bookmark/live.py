@@ -117,8 +117,13 @@ def inspect(target):
         if int(d.EditMode) != 1:
             raise WriterError('READ_ONLY_DOCUMENT', '읽기 전용·배포용·양식 모드 문서는 직접 작성할 수 없습니다.')
         from .document import revision
-        xml=h.xml();selection['revision']=revision(xml)
-        return {'ok': True, 'bookmarks': xmlcheck.bookmarks(xml), 'version': h.version,
+        try:
+            xml=h.xml();selection['revision']=revision(xml)
+            bookmarks=xmlcheck.bookmarks(xml);review_only=False
+        except WriterError as e:
+            if e.code!='REVIEW_SNAPSHOT_REQUIRED':raise
+            bookmarks=[];review_only=True
+        return {'ok':True,'bookmarks':bookmarks,'review_only':review_only, 'version': h.version,
                 'security_module': h.module, 'modified': bool(d.Modified), 'file': target['path'] or None, 'selection': selection}
     finally: pass  # Keep the exact borrowed connection alive across tool calls.
 
@@ -213,11 +218,20 @@ def edit(job):
         guard()
         if int(d.EditMode)!=1:raise WriterError('READ_ONLY_DOCUMENT','일반 편집 문서만 수정할 수 있습니다.')
         original=native_edit.capture(h.hwp)
-        before=native_edit.inspect(h,validate_target=guard)
+        review_analysis=job.get('review_analysis')
+        if review_analysis:
+            from . import review
+            if original.get('cells'):raise WriterError('UNSUPPORTED_SELECTION','검토 편집 전에 셀 블록 선택을 해제하세요.')
+            before=review.inspect(h)
+            if before['revision']!=job['revision']:raise WriterError('STALE_REVISION','분석 이후 검토 내용이 바뀌었습니다.')
+            before['text_targets']=review_analysis.get('text_targets',{})
+            review.compile_actions(before,job['edits'])
+        else:
+            before=native_edit.inspect(h,validate_target=guard)
+            native_edit.enrich_selection(before,original)
+            before['targets']=job['targets'];ops=dm.compile_edits(before,job['edits'])
+            native_edit.validate_fonts(ops)
         if before['revision']!=job['revision']:raise WriterError('STALE_REVISION','분석 이후 문서가 변경됐습니다. 다시 읽으세요.')
-        native_edit.enrich_selection(before,original)
-        before['targets']=job['targets'];ops=dm.compile_edits(before,job['edits'])
-        native_edit.validate_fonts(ops)
         backup=Path(job['backup']);backup.write_bytes(native_bytes(h.hwp.get_text_file('HWP','')))
         stage=Path(job['stage']);stage.write_bytes(backup.read_bytes())
         trial=Hancom(visible=False)
@@ -227,13 +241,25 @@ def edit(job):
             trial.close()
             if os.environ.get('HANGUL_PID_FILE'):Path(os.environ['HANGUL_PID_FILE']).unlink(missing_ok=True)
         guard()
-        if dm.revision(h.xml())!=job['revision']:raise WriterError('EXTERNAL_CHANGE','임시 시험 중 문서가 수정됐습니다. 다시 읽으세요.')
+        current_revision=review.inspect(h)['revision'] if review_analysis else dm.revision(h.xml())
+        if current_revision!=job['revision']:raise WriterError('EXTERNAL_CHANGE','임시 시험 중 문서가 수정됐습니다. 다시 읽으세요.')
         if job.get('dry_run'):
             native_edit.restore(h.hwp,original)
+            trial_report.pop('_structure_snapshot',None)
+            trial_report.pop('_review_projection',None)
             return dict(trial_report,mode='open',saved=False,output=None,dry_run=True,edits=job['edits'],backup=None)
         guard();changed=True
-        report=native_edit.apply_native(h,before,ops,job.get('_cancelled'),guard)
-        guard();d.Modified=1
+        if review_analysis:
+            report=review.apply(h,before,job['edits'],guard)
+            if report.pop('_review_projection',report['revision'])!=trial_report.get('_review_projection',trial_report['revision']):
+                dm.fail('VERIFY_FAILED','열린 창의 검토 결과가 검증한 사본과 다릅니다.')
+        else:
+            report=native_edit.apply_native(h,before,ops,job.get('_cancelled'),guard)
+        guard()
+        actual_snapshot=report.pop('_structure_snapshot',None)
+        if actual_snapshot is not None and actual_snapshot!=trial_report.get('_structure_snapshot'):
+            dm.fail('VERIFY_FAILED','열린 창 편집 결과가 검증한 사본과 다릅니다.')
+        d.Modified=1
         result=dict(report,ok=True,mode='open',saved=False,output=None,backup=str(backup),file=job['target']['path'] or None,version=h.version)
         report['verification']['in_memory']=True;report['verification']['reopened']=False
         receipt(job['receipt'],result)
@@ -253,6 +279,11 @@ def handle(job):
     if job['operation'] == 'open_list': return {'ok': True, 'documents': list_documents()}
     if job['operation'] == 'open_inspect': return inspect(job['target'])
     if job['operation'] == 'open_write': return write(job)
+    if job['operation']=='open_read_review':
+        from .review import inspect as inspect_review
+        h,d=attach(job['target']);guard=edit_guard(h,d,job)
+        guard();report=inspect_review(h);guard()
+        return {'ok':True,'document':report}
     if job['operation'] == 'open_revision':
         from .document import revision
         h,d=attach(job['target']);edit_guard(h,d,job)()

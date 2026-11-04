@@ -114,7 +114,7 @@ class Service(EditingService):
     def check_environment(self, run_smoke=True):
         with self.lock:
             env = self.runner({'operation': 'environment'})
-            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py', 'images.py')).encode()).hexdigest()
+            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py', 'images.py', 'structure.py', 'table_edit.py', 'format_edit.py', 'review.py', 'region_edit.py', 'picture_edit.py', 'table_format.py')).encode()).hexdigest()
             fingerprint = dumps({'version': env['version'], 'application': env.get('application'), 'connector': __version__, 'code': code_hash, 'module': env['security_module']})
             cache = self.state / 'compatibility.json'
             previous = json.loads(cache.read_text('utf-8')) if cache.exists() else {}
@@ -155,7 +155,7 @@ class Service(EditingService):
                 index += 1
             doc = {'document_id': str(uuid.uuid4()), 'source': str(source), 'source_hash': original_hash,
                    'active': str(source), 'active_hash': original_hash, 'output': str(output), 'bookmark': None,
-                   'bookmarks': report['bookmarks'], 'version': report['version']}
+                   'bookmarks': report['bookmarks'], 'version': report['version'], 'review_only': report.get('review_only',False)}
             with self.db: self._put(doc)
             return {'ok': True, **doc, 'security_module': report['security_module']}
 
@@ -175,7 +175,7 @@ class Service(EditingService):
         doc = {'document_id': str(uuid.uuid4()), 'mode': 'open', 'target': selected['target'],
                'window_id': window_id, 'title': selected['title'], 'file': selected['file'],
                'active': selected['file'], 'output': None, 'bookmark': None,
-               'bookmarks': report['bookmarks'], 'version': report['version'], 'saved': False, 'selection': report.get('selection')}
+               'bookmarks': report['bookmarks'], 'version': report['version'], 'review_only': report.get('review_only',False), 'saved': False, 'selection': report.get('selection')}
         with self.db: self._put(doc)
         return {'ok': True, **{k: v for k, v in doc.items() if k != 'target'},
                 'modified': report['modified'], 'security_module': report['security_module']}

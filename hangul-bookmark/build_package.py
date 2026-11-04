@@ -1,8 +1,12 @@
 """Create source package; runtime dependencies installed by setup.ps1 are excluded."""
 from pathlib import Path
+import json
 import zipfile
 import shutil
 root=Path(__file__).resolve().parent
+version=json.loads((root/'plugin.json').read_text(encoding='utf-8'))['version']
+if '-dev' in version:
+    raise SystemExit('배포 검증이 끝난 버전에서만 공유 패키지를 만들 수 있습니다.')
 target=root.parent/'hancom-agent-package.zip'
 with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
     for p in root.rglob('*'):

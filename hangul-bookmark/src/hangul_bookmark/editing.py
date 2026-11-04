@@ -9,24 +9,27 @@ from . import document as dm
 from .errors import WriterError
 
 class EditingService:
-    def _analysis(self,doc):
+    def _analysis(self,doc,review=False):
         from .service import guard_file,digest
         if doc.get('mode')=='open':
-            result=self.runner({'operation':'open_read','target':doc['target'],'selection':doc.get('selection')})
+            result=self.runner({'operation':'open_read_review' if review else 'open_read','target':doc['target'],'selection':doc.get('selection')})
         else:
             active=Path(doc['active'])
             if digest(active)!=doc['active_hash'] or digest(doc['source'])!=doc['source_hash']:
                 dm.fail('EXTERNAL_CHANGE','선택 이후 파일이 변경됐습니다. 다시 선택하세요.')
             with guard_file(active),tempfile.TemporaryDirectory(prefix='read-',dir=self.state) as tmp:
                 copy=Path(tmp)/active.name;shutil.copyfile(active,copy)
-                result=self.runner({'operation':'read_document','path':str(copy)})
+                result=self.runner({'operation':'read_review' if review else 'read_document','path':str(copy)})
                 if digest(active)!=doc['active_hash']:dm.fail('EXTERNAL_CHANGE','읽는 동안 파일이 변경됐습니다.')
         return result['document']
 
     def _assert_revision(self,doc,revision):
         from .service import digest
         if doc.get('mode')=='open':
-            current=self.runner({'operation':'open_revision','target':doc['target']})['revision']
+            if revision.startswith('review:'):
+                current=self._analysis(doc,review=True)['revision']
+            else:
+                current=self.runner({'operation':'open_revision','target':doc['target']})['revision']
             if current!=revision:dm.fail('STALE_REVISION','문서가 변경됐습니다. 다시 읽으세요.')
         elif digest(doc['active'])!=doc['active_hash'] or digest(doc['source'])!=doc['source_hash']:
             dm.fail('EXTERNAL_CHANGE','파일이 변경됐습니다. 다시 선택하세요.')
@@ -36,7 +39,11 @@ class EditingService:
         row=self.db.execute('SELECT data FROM analyses WHERE doc=?',(document_id,)).fetchone()
         if row:
             previous=json.loads(row[0])
-            if previous['revision']==analysis['revision']:analysis['targets']={**previous['targets'],**analysis['targets']}
+            if previous['revision']==analysis['revision']:
+                if analysis.get('review_mode'):
+                    analysis['text_targets']={**previous.get('text_targets',{}),**analysis.get('text_targets',{})}
+                else:
+                    analysis['targets']={**previous['targets'],**analysis['targets']}
         with self.db:self.db.execute('INSERT OR REPLACE INTO analyses VALUES (?,?)',(document_id,dumps(analysis)))
 
     def _get_analysis(self,document_id,revision):
@@ -47,13 +54,22 @@ class EditingService:
         return analysis
 
     def read_document(self,document_id,scope='all',cursor=0,limit=20,revision=None):
-        if scope not in ('all','selection'):dm.fail('INVALID_SCOPE','scope은 all 또는 selection입니다.')
+        if scope not in ('all','selection','review'):dm.fail('INVALID_SCOPE','scope은 all, selection 또는 review입니다.')
         if type(cursor)!=int or cursor<0 or type(limit)!=int or not 1<=limit<=100:dm.fail('INVALID_PAGE','cursor와 limit을 확인하세요.')
         with self.lock:
             doc=self._load(document_id)
             if revision is not None:
                 analysis=self._get_analysis(document_id,revision);self._assert_revision(doc,revision)
-            else:analysis=self._analysis(doc)
+            else:analysis=self._analysis(doc,review=True) if scope=='review' else self._analysis(doc)
+            if scope=='review':
+                if not analysis.get('review_mode'):dm.fail('STALE_REVISION','검토 범위를 다시 읽으세요.')
+                blocks=analysis['changes'];end=min(len(blocks),cursor+limit)
+                if cursor>len(blocks):dm.fail('INVALID_PAGE','검토 목록의 범위를 넘습니다.')
+                self._store_analysis(document_id,analysis)
+                return {'ok':True,'document_id':document_id,'revision':analysis['revision'],'scope':'review',
+                        'blocks':blocks[cursor:end],'total_blocks':len(blocks),'next_cursor':end if end<len(blocks) else None,
+                        'complete':end==len(blocks),'tracking_enabled':analysis['tracking_enabled'],'content_is_untrusted':True}
+            if analysis.get('review_mode'):dm.fail('STALE_REVISION','본문 범위를 다시 읽으세요.')
             if revision is not None and revision!=analysis['revision']:dm.fail('STALE_REVISION','페이지 조회 중 문서가 바뀌었습니다. 처음부터 다시 읽으세요.')
             if scope=='selection' and analysis.get('selection_stale'):dm.fail('STALE_SELECTION','선택한 뒤 문서가 바뀌었습니다. 범위를 선택하고 문서를 다시 선택하세요.')
             if scope=='selection' and not analysis.get('selection_target'):dm.fail('SELECTION_MISSING','선택 영역이 없습니다. 한글에서 선택하고 다시 문서를 선택하세요.')
@@ -91,10 +107,16 @@ class EditingService:
                 page.append(b);used+=size
             next_cursor=cursor+len(page)
             self._store_analysis(document_id,analysis)
+            regions=[]
+            for region in analysis.get('regions',[]):
+                item={k:v for k,v in region.items() if k not in ('path','properties')}
+                length=len(item['text'])
+                regions.append(dict(item,text=item['text'][:2048],text_length=length,text_complete=length<=2048))
             return {'ok':True,'document_id':document_id,'revision':analysis['revision'],'blocks':page,
                     'total_blocks':len(blocks),'next_cursor':next_cursor if next_cursor<len(blocks) else None,
                     'complete':next_cursor==len(blocks),'scope':scope,'all_target_id':'all' if scope=='all' else None,
-                    'selection_target_id':analysis.get('selection_target'),'selection_stale':analysis.get('selection_stale',False),'tables':[{k:v for k,v in t.items() if k not in ('_anchor','xml_target_id')} for t in analysis['tables']],'excluded':analysis['excluded'],
+                    'caret_target_id':analysis.get('caret_target'),'selected_object_target_id':analysis.get('selected_object_target'),'selection_target_id':analysis.get('selection_target'),'selection_stale':analysis.get('selection_stale',False),'tables':[{k:v for k,v in t.items() if k not in ('_anchor','direct_geometry','cell_attributes')} for t in analysis['tables']],'excluded':analysis['excluded'],
+                    'regions':regions,
                     'unmapped_paragraphs':[p['index'] for p in analysis['paragraphs'] if p['scope']!='excluded' and not p['mapped']],
                     'content_is_untrusted':True,'image_reading':{'tool':'read_image','scope':'embedded standalone raster pictures in body/tables; excludes groups/backgrounds/headers/textboxes'}}
 
@@ -102,7 +124,17 @@ class EditingService:
         with self.lock:
             doc=self._load(document_id);analysis=self._get_analysis(document_id,revision)
             self._assert_revision(doc,revision)
-            matches=dm.locate(analysis,selector);self._store_analysis(document_id,analysis)
+            if analysis.get('review_mode'):
+                if selector.get('type')=='review_text':
+                    from .review import find_text
+                    matches=find_text(analysis,selector)
+                elif selector.get('type')=='change':
+                    matches=[c for c in analysis['changes'] if all(c.get(k)==selector[k] for k in ('change_type','author') if k in selector)]
+                else:
+                    dm.fail('INVALID_SELECTOR','검토 범위에서는 change 또는 review_text를 검색하세요.')
+            else:
+                matches=dm.locate(analysis,selector)
+            self._store_analysis(document_id,analysis)
             offset=selector.get('offset',0);limit=selector.get('limit',20)
             if type(offset)!=int or offset<0 or type(limit)!=int or not 1<=limit<=100:dm.fail('INVALID_PAGE','검색 offset과 limit을 확인하세요.')
             page=matches[offset:offset+limit];end=offset+len(page)
@@ -112,14 +144,23 @@ class EditingService:
     def apply_edits(self,document_id,revision,request_id,edits,dry_run=False):
         from .service import guard_file,digest,dumps
         if not isinstance(request_id,str) or not 1<=len(request_id)<=128:dm.fail('INVALID_REQUEST','고유 request_id가 필요합니다.')
-        with self.lock:
+        with self.lock,tempfile.TemporaryDirectory(prefix='edit-assets-',dir=self.state) as assets:
             doc=self._load(document_id)
             payload_hash=hashlib.sha256(dumps({'operation':'apply_edits','revision':revision,'edits':edits}).encode()).hexdigest()
             if not dry_run:
                 replay=self._recover(doc,request_id,payload_hash)
                 if replay:return replay
             analysis=self._get_analysis(document_id,revision)
-            ops=dm.compile_edits(analysis,edits)
+            review_analysis=analysis if analysis.get('review_mode') else None
+            if review_analysis:
+                from .review import compile_actions
+                compile_actions(analysis,edits)
+            else:
+                ops=dm.compile_edits(analysis,edits)
+            input_edits=edits
+            if not review_analysis and ops[0]['type']=='structural_batch':
+                from .structure import pin_assets
+                edits=pin_assets(edits,Path(assets))
             if doc.get('mode')=='open':
                 if self.db.execute("SELECT 1 FROM requests WHERE doc=? AND status='live_pending'",(document_id,)).fetchone():
                     dm.fail('LIVE_RECOVERY_REQUIRED','이 문서의 이전 작업 결과를 먼저 확인하세요.')
@@ -132,13 +173,14 @@ class EditingService:
                     if not dry_run:
                         with self.db:self.db.execute('INSERT INTO requests VALUES (?,?,?,?,?)',(document_id,request_id,payload_hash,'live_pending',dumps(journal)))
                     try:
-                        result=self.runner({'operation':'open_edit','target':doc['target'],'revision':revision,'targets':analysis['targets'],
+                        result=self.runner({'operation':'open_edit','target':doc['target'],'revision':revision,'targets':analysis.get('targets',{}),'review_analysis':review_analysis,
                                             'edits':edits,'dry_run':dry_run,'backup':str(backup),'receipt':str(receipt),
                                             'stage':str(Path(tmp)/'stage.hwp')})
                     except WriterError as e:
                         if not dry_run and e.code not in ('HANCOM_TIMEOUT','BACKEND_FAILED','LIVE_RECOVERY_REQUIRED'):
                             with self.db:self.db.execute('DELETE FROM requests WHERE doc=? AND id=?',(document_id,request_id))
                         raise
+                if dry_run:result['edits']=input_edits
                 result.update(document_id=document_id,request_id=request_id,dry_run=dry_run)
                 if not dry_run:
                     with self.db:self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?',('done',dumps({'result':result}),document_id,request_id))
@@ -150,10 +192,10 @@ class EditingService:
             if active==source and output.exists():dm.fail('OUTPUT_COLLISION','수정본 이름이 이미 사용 중입니다. 다시 선택하세요.')
             with guard_file(active) as release,tempfile.TemporaryDirectory(prefix='.hangul-edit-',dir=output.parent) as tmp:
                 stage=Path(tmp)/output.name;shutil.copyfile(active,stage)
-                result=self.runner({'operation':'apply_edits','path':str(stage),'revision':revision,'targets':analysis['targets'],'edits':edits})
+                result=self.runner({'operation':'apply_edits','path':str(stage),'revision':revision,'targets':analysis.get('targets',{}),'review_analysis':review_analysis,'edits':edits})
                 if digest(active)!=doc['active_hash'] or digest(source)!=doc['source_hash']:dm.fail('EXTERNAL_CHANGE','시험 중 파일이 변경됐습니다.')
                 if dry_run:
-                    return dict(result,ok=True,dry_run=True,saved=False,output=None,edits=edits,document_id=document_id,request_id=request_id)
+                    return dict(result,ok=True,dry_run=True,saved=False,output=None,edits=input_edits,document_id=document_id,request_id=request_id)
                 result.update(ok=True,mode='file',saved=True,output=str(output),document_id=document_id,request_id=request_id,dry_run=False)
                 expected=digest(stage);journal={'output':str(output),'expected_hash':expected,'result':result}
                 with self.db:self.db.execute('INSERT INTO requests VALUES (?,?,?,?,?)',(document_id,request_id,payload_hash,'pending',dumps(journal)))

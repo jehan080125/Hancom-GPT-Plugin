@@ -108,22 +108,33 @@ def inspect(hancom,selection=None,validate_target=None):
     h=hancom.hwp;state=capture(h)
     try:
         xml=hancom.xml();doc=dm.model(xml)
-        scanned={};h.init_scan()
+        scanned={};ctrl=controls(h);memo=False
+        h.init_scan()
         try:
             for _ in range(1000000):
                 guard();status,text=h.get_text()
                 if status>=100:dm.fail('SCAN_FAILED','한글 문서 검색에 실패했습니다.')
                 if status>1 or text:
                     h.move_pos(201);pos=tuple(map(int,h.get_pos()))
-                    scanned.setdefault(pos[:2],[]).append((pos[2],text))
+                    c=ctrl.get(pos)
+                    if status==4 and c is not None and c.CtrlID=='%%me':
+                        memo=True
+                    if status==5:
+                        memo=False
+                    if not memo:
+                        scanned.setdefault(pos[:2],[]).append((pos[2],text))
                 if status<=1:break
             else:dm.fail('SCAN_FAILED','문서 검색이 종료되지 않았습니다.')
         finally:h.release_scan()
         keys=list(scanned)
-        if len(keys)!=len(doc['paragraphs']):
+        candidates=[]
+        for p in doc['paragraphs']:
+            if (p.get('region') or {}).get('kind')=='MEMO':
+                p['native']=None;p['mapped']=False
+            else:candidates.append(p)
+        if len(keys)!=len(candidates):
             dm.fail('POSITION_MAP_FAILED','XML 문단과 실제 한글 문단 개수가 다릅니다. 추측해 수정하지 않습니다.')
-        ctrl=controls(h)
-        for p,key in zip(doc['paragraphs'],keys):
+        for p,key in zip(candidates,keys):
             guard()
             p['native']=list(key);p['mapped']=False
             chunks=scanned[key]
@@ -153,6 +164,11 @@ def inspect(hancom,selection=None,validate_target=None):
             doc['selection_stale']=True;original={}
         enrich_selection(doc,original)
         apply_selection(doc,original)
+        cursor=original.get('position')
+        if cursor:
+            p=next((p for p in doc['paragraphs'] if p['native']==cursor[:2] and p['mapped'] and p['scope']!='excluded'),None)
+            if p is not None and 0<=cursor[2]<=p['length']:
+                doc['caret_target']=dm.add_target(doc,{'kind':'anchor','paragraph':p['index'],'start':cursor[2],'end':cursor[2]})
         doc['bookmark_targets']={}
         for b in doc['bookmarks']:
             if b['scope']=='unsupported' or b['ambiguous']:continue
@@ -189,17 +205,19 @@ def apply_selection(doc,state):
     if c and c['kind']=='tbl':
         table=next((t for t in doc['tables'] if t.get('_anchor')==c['position']),None)
         if table:
+            doc['selected_object_target']=table['xml_target_id']
             entries += [p['id'] for p in doc['paragraphs'] if p['scope']!='excluded' and any(ti['table']==table['number'] for ti in p['cell_path'][::2])]
-    if c and c['kind']=='eqed':
+    if c and c['kind'] in ('eqed','gso'):
         for p in doc['paragraphs']:
             if p['scope']=='excluded':continue
             for a in p['parts']:
-                if [*p['native'],a['start']]==c['position'] and a['kind']=='equation':
+                if [*p['native'],a['start']]==c['position'] and (a['kind']=='equation' if c['kind']=='eqed' else a.get('type')=='PICTURE'):
+                    doc['selected_object_target']=a['id']
                     entries.append(a['id'])
     s=state.get('selection',[False])
     if not entries and s and s[0]:
         start=tuple(map(int,s[1:4]));end=tuple(map(int,s[4:7]))
-        order={tuple(p['native']):i for i,p in enumerate(doc['paragraphs'])}
+        order={tuple(p['native']):i for i,p in enumerate(doc['paragraphs']) if p['native'] is not None}
         if start[:2] in order and end[:2] in order:
             a=(order[start[:2]],start[2]);b=(order[end[:2]],end[2])
             if a>b:a,b=b,a
@@ -207,7 +225,7 @@ def apply_selection(doc,state):
                 if p['scope']=='excluded':continue
                 lo=a[1] if p['index']==a[0] else 0
                 hi=b[1] if p['index']==b[0] else p['length']
-                if lo<hi:entries.append(dm.add_target(doc,{'kind':'range','paragraph':p['index'],'start':lo,'end':hi}))
+                if lo<hi or a[0]!=b[0]:entries.append(dm.add_target(doc,{'kind':'range','paragraph':p['index'],'start':lo,'end':hi}))
     if entries:doc['selection_target']=dm.add_target(doc,{'kind':'group','members':entries})
 
 def installed_fonts():
@@ -244,6 +262,9 @@ def apply_native(hancom,before,ops,cancelled=None,validate_target=None):
         if cancelled is not None and cancelled.is_set():dm.fail('HANCOM_TIMEOUT','시간 초과 후 추가 수정을 중단했습니다.')
         if validate_target:validate_target()
     ready()
+    if ops[0]['type']=='structural_batch':
+        from .structure import execute_batch
+        return execute_batch(hancom,before,ops,ready)
     if any(o['type']=='insert_blocks' for o in ops):
         from .fill import apply_native as fill_native
         return fill_native(hancom,before,ops,ready)
@@ -317,13 +338,31 @@ def apply_native(hancom,before,ops,cancelled=None,validate_target=None):
 def execute(hancom,job):
     from pathlib import Path
     hancom.open(job['path'])
+    hancom.memory_images=job.get('operation')=='open_edit'
+    if job.get('review_analysis'):
+        from .review import apply,inspect as inspect_review
+        report=apply(hancom,job['review_analysis'],job['edits'],lambda:None)
+        hancom.save(job['path']);hancom.hwp.clear(1);hancom.open(job['path'])
+        reopened=inspect_review(hancom)
+        if reopened['revision']!=report['revision']:
+            dm.fail('VERIFY_FAILED','재열기 후 변경 내역과 문서 내용이 다릅니다.')
+        report.update(version=hancom.version,security_module=hancom.module)
+        report['verification']['reopened']=True
+        if job.get('operation')!='open_edit':report.pop('_review_projection',None)
+        return report
     before=inspect(hancom)
     if before['revision']!=job['revision']:dm.fail('STALE_REVISION','분석 후 문서가 변경됐습니다. 다시 읽으세요.')
     before['targets']=job['targets']
     ops=dm.compile_edits(before,job['edits'])
     report=apply_native(hancom,before,ops)
     hancom.save(job['path']);hancom.hwp.clear(1);hancom.open(job['path'])
-    after=inspect(hancom);dm.verify_edit(before,after,ops)
+    after=inspect(hancom)
+    if ops[0]['type']=='structural_batch':
+        from .structure import full_snapshot,verify
+        verify(full_snapshot(after)==report['_structure_snapshot'],'재열기 후 개체·내용·서식이 달라졌습니다.')
+    else:
+        dm.verify_edit(before,after,ops)
+    if job.get('operation')!='open_edit':report.pop('_structure_snapshot',None)
     report.update(ok=True,version=hancom.version,security_module=hancom.module,revision=after['revision'])
     report['verification']['reopened']=True
     return report
