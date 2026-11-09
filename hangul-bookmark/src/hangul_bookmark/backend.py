@@ -131,14 +131,23 @@ class Hancom:
         p.SetItem('String', script); p.SetItem('BaseUnit', size)
         check(a.Execute(p), '수식 개체를 생성하지 못했습니다.')
 
-    def inspect(self, path):
+    def inspect(self, path, analyze=False):
         self.open(path)
+        analysis=None
         try:
-            bookmarks=xmlcheck.bookmarks(self.xml());review_only=False
+            xml=self.xml();review_only=False
+            if analyze:
+                from .native_edit import inspect
+                try:
+                    analysis=inspect(self,selection={},xml=xml)
+                except WriterError as e:
+                    if e.code not in ('SCAN_FAILED','POSITION_MAP_FAILED'):raise
+            bookmarks=analysis['bookmarks'] if analysis is not None else xmlcheck.bookmarks(xml)
         except WriterError as e:
             if e.code!='REVIEW_SNAPSHOT_REQUIRED':raise
             bookmarks=[];review_only=True
-        return {'bookmarks':bookmarks,'version':self.version,'security_module':self.module,'review_only':review_only}
+        return {'bookmarks':bookmarks,'version':self.version,'security_module':self.module,'review_only':review_only,
+                'analysis':analysis}
 
     def write(self, path, name, blocks):
         self.open(path)
@@ -247,7 +256,8 @@ class Hancom:
             check(second['text'].find('두 번째 ') < second['text'].find('새 내용 '), '반복 삽입 순서가 다릅니다.')
             output.append({'format': suffix, 'ok': True, **report})
         from .native_edit import smoke as edit_smoke
-        return {'ok': True, 'version': self.version, 'security_module': self.module, 'smoke': output, 'edit_smoke':edit_smoke(self,directory)}
+        return {'ok': True, 'version': self.version, 'security_module': self.module, 'application': self.application,
+                'adapter': self.adapter, 'smoke_tested': True, 'smoke': output, 'edit_smoke':edit_smoke(self,directory)}
 
 def main():
     job = json.load(sys.stdin)
@@ -266,7 +276,7 @@ def main():
                 result = {'ok': True, 'version': backend.version, 'security_module': backend.module,
                           'adapter': backend.adapter, 'application': backend.application,
                           'smoke_tested': False}
-            elif op == 'inspect': result = {'ok': True, **backend.inspect(job['path'])}
+            elif op == 'inspect': result = {'ok': True, **backend.inspect(job['path'],job.get('analyze',False))}
             elif op == 'write': result = {'ok': True, **backend.write(job['path'], job['bookmark'], job['blocks'])}
             elif op == 'read_document':
                 from .native_edit import inspect

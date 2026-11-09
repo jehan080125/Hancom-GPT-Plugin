@@ -16,6 +16,9 @@ class Runner:
         if op=='open_inspect':
             if self.closed: raise WriterError('OPEN_DOCUMENT_CLOSED','closed')
             return {'bookmarks':[{'name':'B','scope':'body','ambiguous':False}],'version':[12,0,0,535],'modified':True,'security_module':True}
+        if op=='open_validate':
+            if self.closed: raise WriterError('OPEN_DOCUMENT_CLOSED','closed')
+            return {'ok':True}
         assert op=='open_write'
         self.writes+=1
         if self.fail: raise WriterError(self.fail,'failure')

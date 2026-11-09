@@ -109,21 +109,31 @@ def native_bytes(data):
         raise WriterError('BACKUP_FAILED', '네이티브 HWP 사본의 형식이 올바르지 않습니다.')
     return binary
 
-def inspect(target):
+def inspect(target,analyze=False,cancelled=None):
     h, d = attach(target)
-    from .native_edit import capture
+    from .native_edit import capture,inspect as analyze_document
     selection=capture(h.hwp)
+    analysis=None
     try:
         if int(d.EditMode) != 1:
             raise WriterError('READ_ONLY_DOCUMENT', '읽기 전용·배포용·양식 모드 문서는 직접 작성할 수 없습니다.')
         from .document import revision
         try:
-            xml=h.xml();selection['revision']=revision(xml)
-            bookmarks=xmlcheck.bookmarks(xml);review_only=False
+            xml=h.xml();review_only=False
+            if analyze:
+                try:
+                    guard=edit_guard(h,d,{'target':target,'_cancelled':cancelled})
+                    analysis=analyze_document(h,selection=selection,validate_target=guard,xml=xml)
+                except WriterError as e:
+                    if e.code not in ('SCAN_FAILED','POSITION_MAP_FAILED'):raise
+            if analysis is not None:
+                bookmarks=analysis['bookmarks'];selection['revision']=analysis['revision']
+            else:
+                bookmarks=xmlcheck.bookmarks(xml);selection['revision']=revision(xml)
         except WriterError as e:
             if e.code!='REVIEW_SNAPSHOT_REQUIRED':raise
             bookmarks=[];review_only=True
-        return {'ok':True,'bookmarks':bookmarks,'review_only':review_only, 'version': h.version,
+        return {'ok':True,'bookmarks':bookmarks,'review_only':review_only,'analysis':analysis,'version': h.version,
                 'security_module': h.module, 'modified': bool(d.Modified), 'file': target['path'] or None, 'selection': selection}
     finally: pass  # Keep the exact borrowed connection alive across tool calls.
 
@@ -277,17 +287,17 @@ def edit(job):
 
 def handle(job):
     if job['operation'] == 'open_list': return {'ok': True, 'documents': list_documents()}
-    if job['operation'] == 'open_inspect': return inspect(job['target'])
+    if job['operation'] == 'open_inspect': return inspect(job['target'],job.get('analyze',False),job.get('_cancelled'))
+    if job['operation'] == 'open_validate':
+        h,d=attach(job['target'])
+        edit_guard(h,d,job)()
+        return {'ok':True}
     if job['operation'] == 'open_write': return write(job)
     if job['operation']=='open_read_review':
         from .review import inspect as inspect_review
         h,d=attach(job['target']);guard=edit_guard(h,d,job)
         guard();report=inspect_review(h);guard()
         return {'ok':True,'document':report}
-    if job['operation'] == 'open_revision':
-        from .document import revision
-        h,d=attach(job['target']);edit_guard(h,d,job)()
-        return {'ok':True,'revision':revision(h.xml())}
     if job['operation'] == 'open_image':
         from .images import read_native
         h,d=attach(job['target']);return read_native(h,job,edit_guard(h,d,job))

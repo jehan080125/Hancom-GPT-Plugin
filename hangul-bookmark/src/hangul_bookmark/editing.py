@@ -23,44 +23,53 @@ class EditingService:
                 if digest(active)!=doc['active_hash']:dm.fail('EXTERNAL_CHANGE','읽는 동안 파일이 변경됐습니다.')
         return result['document']
 
-    def _assert_revision(self,doc,revision):
+    def _assert_file_current(self,doc):
         from .service import digest
         if doc.get('mode')=='open':
-            if revision.startswith('review:'):
-                current=self._analysis(doc,review=True)['revision']
-            else:
-                current=self.runner({'operation':'open_revision','target':doc['target']})['revision']
-            if current!=revision:dm.fail('STALE_REVISION','문서가 변경됐습니다. 다시 읽으세요.')
-        elif digest(doc['active'])!=doc['active_hash'] or digest(doc['source'])!=doc['source_hash']:
+            return
+        paths={doc['source']:doc['source_hash'],doc['active']:doc['active_hash']}
+        if any(not Path(path).is_file() or digest(path)!=expected for path,expected in paths.items()):
             dm.fail('EXTERNAL_CHANGE','파일이 변경됐습니다. 다시 선택하세요.')
+
+    def _cached_analysis(self,document_id):
+        row=self.db.execute('SELECT data FROM analyses WHERE doc=?',(document_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _discard_analysis(self,document_id):
+        self.db.execute('DELETE FROM analyses WHERE doc=?',(document_id,))
 
     def _store_analysis(self,document_id,analysis):
         from .service import dumps
-        row=self.db.execute('SELECT data FROM analyses WHERE doc=?',(document_id,)).fetchone()
-        if row:
-            previous=json.loads(row[0])
-            if previous['revision']==analysis['revision']:
-                if analysis.get('review_mode'):
-                    analysis['text_targets']={**previous.get('text_targets',{}),**analysis.get('text_targets',{})}
-                else:
-                    analysis['targets']={**previous['targets'],**analysis['targets']}
+        previous=self._cached_analysis(document_id)
+        if previous and previous['revision']==analysis['revision']:
+            if analysis.get('review_mode'):
+                analysis['text_targets']={**previous.get('text_targets',{}),**analysis.get('text_targets',{})}
+            else:
+                analysis['targets']={**previous['targets'],**analysis['targets']}
         with self.db:self.db.execute('INSERT OR REPLACE INTO analyses VALUES (?,?)',(document_id,dumps(analysis)))
 
     def _get_analysis(self,document_id,revision):
-        row=self.db.execute('SELECT data FROM analyses WHERE doc=?',(document_id,)).fetchone()
-        if not row:dm.fail('ANALYSIS_MISSING','read_document로 문서를 먼저 읽으세요.')
-        analysis=json.loads(row[0])
+        analysis=self._cached_analysis(document_id)
+        if analysis is None:dm.fail('ANALYSIS_MISSING','read_document로 문서를 먼저 읽으세요.')
         if analysis['revision']!=revision:dm.fail('STALE_REVISION','이전 분석입니다. 문서를 다시 읽으세요.')
         return analysis
 
-    def read_document(self,document_id,scope='all',cursor=0,limit=20,revision=None):
+    def read_document(self,document_id,scope='all',cursor=0,limit=20,revision=None,refresh=False):
         if scope not in ('all','selection','review'):dm.fail('INVALID_SCOPE','scope은 all, selection 또는 review입니다.')
         if type(cursor)!=int or cursor<0 or type(limit)!=int or not 1<=limit<=100:dm.fail('INVALID_PAGE','cursor와 limit을 확인하세요.')
+        if refresh and (revision is not None or cursor):
+            dm.fail('INVALID_PAGE','새로 읽을 때는 첫 페이지에서 revision 없이 요청하세요.')
         with self.lock:
             doc=self._load(document_id)
+            self._assert_file_current(doc)
             if revision is not None:
-                analysis=self._get_analysis(document_id,revision);self._assert_revision(doc,revision)
-            else:analysis=self._analysis(doc,review=True) if scope=='review' else self._analysis(doc)
+                analysis=self._get_analysis(document_id,revision)
+            else:
+                if refresh:
+                    with self.db:self._discard_analysis(document_id)
+                analysis=self._cached_analysis(document_id)
+                if analysis is None or bool(analysis.get('review_mode'))!=(scope=='review'):
+                    analysis=self._analysis(doc,review=scope=='review')
             if scope=='review':
                 if not analysis.get('review_mode'):dm.fail('STALE_REVISION','검토 범위를 다시 읽으세요.')
                 blocks=analysis['changes'];end=min(len(blocks),cursor+limit)
@@ -123,7 +132,7 @@ class EditingService:
     def find_targets(self,document_id,revision,selector):
         with self.lock:
             doc=self._load(document_id);analysis=self._get_analysis(document_id,revision)
-            self._assert_revision(doc,revision)
+            self._assert_file_current(doc)
             if analysis.get('review_mode'):
                 if selector.get('type')=='review_text':
                     from .review import find_text
@@ -171,19 +180,24 @@ class EditingService:
                     if dry_run:backup=Path(tmp)/'before.hwp';receipt=Path(tmp)/'receipt.json'
                     journal={'backup':str(backup),'receipt':str(receipt),'bookmark':None,'counts':{}}
                     if not dry_run:
-                        with self.db:self.db.execute('INSERT INTO requests VALUES (?,?,?,?,?)',(document_id,request_id,payload_hash,'live_pending',dumps(journal)))
+                        with self.db:
+                            self.db.execute('INSERT INTO requests VALUES (?,?,?,?,?)',(document_id,request_id,payload_hash,'live_pending',dumps(journal)))
                     try:
                         result=self.runner({'operation':'open_edit','target':doc['target'],'revision':revision,'targets':analysis.get('targets',{}),'review_analysis':review_analysis,
                                             'edits':edits,'dry_run':dry_run,'backup':str(backup),'receipt':str(receipt),
                                             'stage':str(Path(tmp)/'stage.hwp')})
                     except WriterError as e:
+                        if e.code in ('STALE_REVISION','EXTERNAL_CHANGE','HANCOM_TIMEOUT','BACKEND_FAILED','LIVE_RECOVERY_REQUIRED'):
+                            with self.db:self._discard_analysis(document_id)
                         if not dry_run and e.code not in ('HANCOM_TIMEOUT','BACKEND_FAILED','LIVE_RECOVERY_REQUIRED'):
                             with self.db:self.db.execute('DELETE FROM requests WHERE doc=? AND id=?',(document_id,request_id))
                         raise
                 if dry_run:result['edits']=input_edits
                 result.update(document_id=document_id,request_id=request_id,dry_run=dry_run)
                 if not dry_run:
-                    with self.db:self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?',('done',dumps({'result':result}),document_id,request_id))
+                    with self.db:
+                        self._discard_analysis(document_id)
+                        self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?',('done',dumps({'result':result}),document_id,request_id))
                 return result
             for rid,ph in self.db.execute("SELECT id,hash FROM requests WHERE doc=? AND status='pending'",(document_id,)).fetchall():
                 self._recover(doc,rid,ph)
@@ -192,7 +206,12 @@ class EditingService:
             if active==source and output.exists():dm.fail('OUTPUT_COLLISION','수정본 이름이 이미 사용 중입니다. 다시 선택하세요.')
             with guard_file(active) as release,tempfile.TemporaryDirectory(prefix='.hangul-edit-',dir=output.parent) as tmp:
                 stage=Path(tmp)/output.name;shutil.copyfile(active,stage)
-                result=self.runner({'operation':'apply_edits','path':str(stage),'revision':revision,'targets':analysis.get('targets',{}),'review_analysis':review_analysis,'edits':edits})
+                try:
+                    result=self.runner({'operation':'apply_edits','path':str(stage),'revision':revision,'targets':analysis.get('targets',{}),'review_analysis':review_analysis,'edits':edits})
+                except WriterError as e:
+                    if e.code=='STALE_REVISION':
+                        with self.db:self._discard_analysis(document_id)
+                    raise
                 if digest(active)!=doc['active_hash'] or digest(source)!=doc['source_hash']:dm.fail('EXTERNAL_CHANGE','시험 중 파일이 변경됐습니다.')
                 if dry_run:
                     return dict(result,ok=True,dry_run=True,saved=False,output=None,edits=input_edits,document_id=document_id,request_id=request_id)
@@ -212,6 +231,7 @@ class EditingService:
                 doc['active']=str(output);doc['active_hash']=expected
                 with self.db:
                     self._put(doc)
+                    self._discard_analysis(document_id)
                     self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?',('done',dumps({'result':result}),document_id,request_id))
                 return result
 
@@ -221,17 +241,22 @@ class EditingService:
         validate_options(crop,max_edge)
         with self.lock:
             doc=self._load(document_id);analysis=self._get_analysis(document_id,revision)
-            target=analysis['targets'].get(target_id)
+            target=analysis.get('targets',{}).get(target_id)
             if not target or target.get('kind')!='control':dm.fail('NOT_AN_IMAGE','read_document에서 읽은 그림 target_id를 지정하세요.')
-            self._assert_revision(doc,revision)
+            self._assert_file_current(doc)
             job={'revision':revision,'target_id':target_id,'crop':crop,'max_edge':max_edge}
             if doc.get('mode')=='open':
-                result=self.runner(dict(job,operation='open_image',target=doc['target']))
+                try:
+                    result=self.runner(dict(job,operation='open_image',target=doc['target']))
+                except WriterError as e:
+                    if e.code=='STALE_REVISION':
+                        with self.db:self._discard_analysis(document_id)
+                    raise
             else:
                 active=Path(doc['active'])
                 with guard_file(active),tempfile.TemporaryDirectory(prefix='image-',dir=self.state) as tmp:
                     copy=Path(tmp)/active.name;shutil.copyfile(active,copy)
                     result=self.runner(dict(job,operation='read_image',path=str(copy)))
-                    self._assert_revision(doc,revision)
+                    self._assert_file_current(doc)
             result['document_id']=document_id
             return result

@@ -110,5 +110,4 @@ def read_native(hancom,job,guard=None):
     xml=hancom.xml()
     result=extract(xml,job['revision'],job['target_id'],job.get('crop'),job.get('max_edge',2048))
     if guard:guard()
-    if dm.revision(hancom.xml())!=job['revision']:dm.fail('STALE_REVISION','이미지를 읽는 동안 문서가 변경됐습니다.')
     return result

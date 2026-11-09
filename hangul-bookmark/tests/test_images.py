@@ -69,15 +69,12 @@ def test_native_read_only():
         def xml(self):self.calls+=1;return xml
     h=H();_,rev,id=args(xml)
     r=images.read_native(h,{'revision':rev,'target_id':id})
-    assert r['ok'] and h.calls==2
+    assert r['ok'] and h.calls==1
 
-def test_native_mid_read_change():
+def test_native_rejects_changed_snapshot():
     xml=fixture()
     class H:
-        calls=0
-        def xml(self):
-            self.calls+=1
-            return xml if self.calls==1 else xml.replace('Effect="RealPic"','Effect="Gray"')
+        def xml(self):return xml.replace('Effect="RealPic"','Effect="Gray"')
     _,rev,id=args(xml)
     with pytest.raises(WriterError) as e:images.read_native(H(),{'revision':rev,'target_id':id})
     assert e.value.code=='STALE_REVISION'
@@ -86,8 +83,8 @@ def test_service_returns_image_blocks(tmp_path):
     from hangul_bookmark.service import Service,dumps
     class Runner:
         def __call__(self,job):
-            if job['operation']=='open_revision':return {'revision':dm.revision(fixture())}
             if job['operation']=='open_image':return images.extract(fixture(),job['revision'],job['target_id'],job['crop'],job['max_edge'])
+            assert job['operation']=='open_read'
             model=dm.model(fixture())
             for p in model['paragraphs']:p['mapped']=True
             return {'document':model}

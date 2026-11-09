@@ -249,10 +249,85 @@ def test_open_edit_ambiguous_blocks_retry(opened,error):
     assert r.writes==1
 
 def test_open_edit_known_failure_can_retry(opened):
-    s,r,info=opened;rev,ops=edits(s,info);r.error='STALE_REVISION'
+    s,r,info=opened;rev,ops=edits(s,info);r.error='HANCOM_FAILED'
     with pytest.raises(WriterError):s.apply_edits(info['document_id'],rev,'req',ops)
     r.error=None
     assert s.apply_edits(info['document_id'],rev,'req',ops)['saved'] is False
+
+def test_stale_edit_requires_a_new_read(opened):
+    s,r,info=opened;rev,ops=edits(s,info);r.error='STALE_REVISION'
+    did=info['document_id']
+    with pytest.raises(WriterError,match='simulated'):
+        s.apply_edits(did,rev,'req',ops)
+    with pytest.raises(WriterError) as error:
+        s.find_targets(did,rev,{'type':'text','text':'same'})
+    assert error.value.code=='ANALYSIS_MISSING'
+    r.analysis=doc('new body')
+    assert s.read_document(did)['revision']!=rev
+
+@pytest.mark.parametrize('mode',['file','open'])
+def test_selection_read_and_search_share_one_snapshot(tmp_path,mode):
+    calls=[]
+    model=doc('same text','<P><TEXT><CHAR>next</CHAR></TEXT></P>')
+    def runner(job):
+        op=job['operation'];calls.append(op)
+        if op=='open_list':
+            return {'documents':[{'window_id':'one','target':{},'title':'one','file':None}]}
+        if op in ('inspect','open_inspect'):
+            assert job['analyze']
+            return {'bookmarks':[],'version':[12,0,0,535],'security_module':True,
+                    'modified':False,'analysis':copy.deepcopy(model)}
+        if op=='open_read':
+            return {'document':doc('refreshed')}
+        raise AssertionError(op)
+    service=Service(tmp_path/'state',runner)
+    try:
+        source=tmp_path/'source.hwp';source.write_bytes(b'original')
+        if mode=='open':
+            selected=service.select_document(mode='open',window_id='one')
+        else:
+            selected=service.select_document(str(source))
+        did=selected['document_id']
+        assert 'analysis' not in selected
+        first=service.read_document(did,limit=1)
+        rev=first['revision']
+        assert service.read_document(did,revision=rev,cursor=first['next_cursor'])['complete']
+        assert service.read_document(did)['revision']==rev
+        assert service.find_targets(did,rev,{'type':'text','text':'same'})['count']==1
+        assert calls==(['open_list','open_inspect'] if mode=='open' else ['inspect'])
+        if mode=='open':
+            assert service.read_document(did,refresh=True)['revision']!=rev
+            assert calls[-1]=='open_read'
+    finally:
+        service.close()
+
+def test_default_diagnostic_skips_smoke(tmp_path):
+    calls=[]
+    def runner(job):
+        calls.append(job['operation'])
+        return {'version':[12,0,0,535],'security_module':True,'smoke_tested':False}
+    service=Service(tmp_path/'state',runner)
+    try:
+        assert not service.check_environment()['smoke_tested']
+        assert calls==['environment']
+    finally:
+        service.close()
+
+def test_explicit_diagnostic_runs_a_fresh_smoke_each_time(tmp_path):
+    paths=[]
+    def runner(job):
+        assert job['operation']=='smoke'
+        path=Path(job['directory'])
+        assert path.is_dir()
+        paths.append(path)
+        return {'smoke_tested':True}
+    service=Service(tmp_path/'state',runner)
+    try:
+        assert service.check_environment(run_smoke=True)['smoke_tested']
+        assert service.check_environment(run_smoke=True)['smoke_tested']
+        assert len(set(paths))==2 and not any(p.exists() for p in paths)
+    finally:
+        service.close()
 
 def test_open_edit_receipt_recovers_counts(opened):
     s,r,info=opened;rev,ops=edits(s,info);r.recovered=True

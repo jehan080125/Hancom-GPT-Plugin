@@ -102,12 +102,12 @@ def controls(h):
         except Exception:continue
     return found
 
-def inspect(hancom,selection=None,validate_target=None):
+def inspect(hancom,selection=None,validate_target=None,xml=None):
     guard=validate_target or (lambda:None)
     guard()
     h=hancom.hwp;state=capture(h)
     try:
-        xml=hancom.xml();doc=dm.model(xml)
+        doc=dm.model(hancom.xml() if xml is None else xml)
         scanned={};ctrl=controls(h);memo=False
         h.init_scan()
         try:

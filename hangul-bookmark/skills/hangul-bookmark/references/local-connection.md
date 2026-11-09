@@ -12,7 +12,6 @@
 
 ```json
 [
-  {"id":"check","tool":"check_environment","arguments":{"run_smoke":true}},
   {"id":"document","tool":"select_document","arguments":{"mode":"open"}},
   {"id":"bookmark","tool":"select_bookmark","arguments":{"document_id":{"$ref":"document.document_id"},"name":"1"}},
   {"id":"write","tool":"insert_content","arguments":{"document_id":{"$ref":"document.document_id"},"bookmark":"1","request_id":"새 요청마다 생성하고 재시도에는 유지하는 UUID","blocks":[{"type":"equation","format":"latex","display":"block","script":"E=mc^2"}]}}
@@ -20,6 +19,8 @@
 ```
 
 각 단계의 ok=false면 다음 단계를 실행하지 않는다. 문서가 여러 개면 서버가 로컬 선택 창을 표시한다. 결과에 pending이 남거나 실행이 끊겼으면 해당 도구가 이미 수행되었을 수 있다. 기록을 확인하고 임의로 새 요청 ID를 만들어 다시 쓰지 않는다. 브리지는 오류를 자동 재시도하지 않는다. 결과 파일에는 문서 경로 등 로컬 정보가 포함된다.
+
+사용자가 플러그인 테스트를 요청하면 별도 작업에서 check_environment(run_smoke=true)를 호출한다. 연결 상태만 확인할 때는 run_smoke=false를 전달한다.
 
 전용 도구가 없는 것과 서버 실행 실패는 구분해서 설명한다. 실행 권한 문제는 환경의 정상적인 승인 절차로 처리하고, 보안 설정을 낮추거나 전역 한글 창을 임의로 제어하지 않는다. 작성 성공은 도구의 실제 반환 결과로 판단하며 열린 창은 saved=false이다.
 

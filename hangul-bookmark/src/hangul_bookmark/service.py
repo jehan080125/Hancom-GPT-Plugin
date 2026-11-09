@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from . import __version__, content
+from . import content
 from .errors import WriterError
 
 def digest(path):
@@ -111,24 +111,12 @@ class Service(EditingService):
     def _put(self, doc):
         self.db.execute('INSERT OR REPLACE INTO documents VALUES (?,?)', (doc['document_id'], dumps(doc)))
 
-    def check_environment(self, run_smoke=True):
+    def check_environment(self, run_smoke=False):
         with self.lock:
-            env = self.runner({'operation': 'environment'})
-            code_hash = hashlib.sha256(''.join(digest(Path(__file__).with_name(f)) for f in ('backend.py', 'live.py', 'xmlcheck.py', 'latex.py', 'content.py', 'adapters.py', 'document.py', 'native_edit.py', 'editing.py', 'com_runtime.py', 'images.py', 'structure.py', 'table_edit.py', 'format_edit.py', 'review.py', 'region_edit.py', 'picture_edit.py', 'table_format.py')).encode()).hexdigest()
-            fingerprint = dumps({'version': env['version'], 'application': env.get('application'), 'connector': __version__, 'code': code_hash, 'module': env['security_module']})
-            cache = self.state / 'compatibility.json'
-            previous = json.loads(cache.read_text('utf-8')) if cache.exists() else {}
-            if not run_smoke: return env
-            if previous.get('fingerprint') == fingerprint and previous.get('ok'):
-                return dict(previous['report'], cached=True)
+            if not run_smoke:
+                return self.runner({'operation': 'environment', 'visible': False})
             with tempfile.TemporaryDirectory(prefix='smoke-', dir=self.state) as directory:
-                report = self.runner({'operation': 'smoke', 'directory': directory})
-            report.update(application=env.get('application'), adapter=env.get('adapter'))
-            if not env['security_module']:
-                report['environment_warnings'] = ['한컴 보안 모듈이 로드되지 않았습니다. 파일 접근 승인 창이 표시되면 직접 승인하세요.']
-            record = {'ok': True, 'fingerprint': fingerprint, 'report': report}
-            tmp = cache.with_suffix('.tmp'); tmp.write_text(dumps(record), encoding='utf-8'); os.replace(tmp, cache)
-            return report
+                return self.runner({'operation': 'smoke', 'directory': directory, 'visible': False})
 
     def select_document(self, path=None, mode='file', window_id=None, list_only=False):
         with self.lock:
@@ -137,7 +125,6 @@ class Service(EditingService):
                 raise WriterError('INVALID_SELECTION', 'mode는 file 또는 open이며 열린 창 선택 옵션은 open에서만 사용합니다.')
             path = path or self.dialogs.choose_file()
             if not path: return {'ok': True, 'cancelled': True}
-            self.check_environment()
             source = Path(path).expanduser().resolve()
             if source.suffix.lower() not in ('.hwp', '.hwpx') or not source.is_file():
                 raise WriterError('INVALID_FILE', '.hwp 또는 .hwpx 파일을 선택하세요.')
@@ -145,7 +132,7 @@ class Service(EditingService):
                 original_hash = digest(source)
                 with tempfile.TemporaryDirectory(prefix='inspect-', dir=self.state) as tmp:
                     copy = Path(tmp) / source.name; shutil.copyfile(source, copy)
-                    report = self.runner({'operation': 'inspect', 'path': str(copy)})
+                    report = self.runner({'operation': 'inspect', 'path': str(copy), 'analyze': True, 'visible': False})
                 if digest(source) != original_hash: raise WriterError('EXTERNAL_CHANGE', '파일 선택 중 원본이 변경되었습니다.')
             index = 1
             while True:
@@ -157,6 +144,8 @@ class Service(EditingService):
                    'active': str(source), 'active_hash': original_hash, 'output': str(output), 'bookmark': None,
                    'bookmarks': report['bookmarks'], 'version': report['version'], 'review_only': report.get('review_only',False)}
             with self.db: self._put(doc)
+            if report.get('analysis') is not None:
+                self._store_analysis(doc['document_id'],report['analysis'])
             return {'ok': True, **doc, 'security_module': report['security_module']}
 
     def _select_open(self, window_id, list_only, path):
@@ -170,13 +159,14 @@ class Service(EditingService):
             if window_id is None: return {'ok': True, 'cancelled': True}
         selected = next((d for d in items if d['window_id'] == window_id), None)
         if selected is None: raise WriterError('OPEN_DOCUMENT_CLOSED', '선택한 열린 문서를 찾지 못했습니다. 목록을 다시 확인하세요.')
-        self.check_environment()
-        report = self.runner({'operation': 'open_inspect', 'target': selected['target']})
+        report = self.runner({'operation': 'open_inspect', 'target': selected['target'], 'analyze': True})
         doc = {'document_id': str(uuid.uuid4()), 'mode': 'open', 'target': selected['target'],
                'window_id': window_id, 'title': selected['title'], 'file': selected['file'],
                'active': selected['file'], 'output': None, 'bookmark': None,
                'bookmarks': report['bookmarks'], 'version': report['version'], 'review_only': report.get('review_only',False), 'saved': False, 'selection': report.get('selection')}
         with self.db: self._put(doc)
+        if report.get('analysis') is not None:
+            self._store_analysis(doc['document_id'],report['analysis'])
         return {'ok': True, **{k: v for k, v in doc.items() if k != 'target'},
                 'modified': report['modified'], 'security_module': report['security_module']}
 
@@ -184,8 +174,7 @@ class Service(EditingService):
         with self.lock:
             doc = self._load(document_id)
             if doc.get('mode') == 'open':
-                report = self.runner({'operation': 'open_inspect', 'target': doc['target']})
-                doc['bookmarks'] = report['bookmarks']
+                self.runner({'operation': 'open_validate', 'target': doc['target']})
             valid = [b['name'] for b in doc['bookmarks'] if b['scope'] != 'unsupported' and not b['ambiguous']]
             if not valid: raise WriterError('BOOKMARK_MISSING', '본문 또는 표 셀에 책갈피를 미리 만들어 주세요.')
             name = name or self.dialogs.choose_bookmark(valid)
@@ -219,6 +208,7 @@ class Service(EditingService):
                     result.setdefault('bookmark',data.get('bookmark'))
                     result.setdefault('counts',data.get('counts',{}))
                     with self.db:
+                        self._discard_analysis(doc['document_id'])
                         self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?', ('done', dumps({'result': result}), doc['document_id'], request_id))
                     return dict(result, replayed=True, recovered=True)
             raise WriterError('LIVE_RECOVERY_REQUIRED', '이 열린 문서 요청의 완료를 확정할 수 없습니다. 중복 작성을 막기 위해 재삽입하지 않습니다. 창과 복원용 사본을 확인하세요: ' + data['backup'])
@@ -227,6 +217,7 @@ class Service(EditingService):
             doc['active'] = str(target); doc['active_hash'] = data['expected_hash']
             with self.db:
                 self._put(doc)
+                self._discard_analysis(doc['document_id'])
                 self.db.execute('UPDATE requests SET status=? WHERE doc=? AND id=?', ('done', doc['document_id'], request_id))
             return dict(data['result'], replayed=True, recovered=True)
         raise WriterError('RECOVERY_REQUIRED', '이 요청의 저장 완료 여부를 확인할 수 없습니다. 문서를 확인하고 새로 선택하세요.')
@@ -246,7 +237,6 @@ class Service(EditingService):
             if replay: return replay
             if doc.get('mode') == 'open':
                 return self._insert_open(doc, request_id, normalized, name, payload_hash)
-            self.check_environment()
             valid = [b['name'] for b in doc['bookmarks'] if b['scope'] != 'unsupported' and not b['ambiguous']]
             if name not in valid: raise WriterError('BOOKMARK_MISSING', '선택한 문서에 해당 책갈피가 없습니다.')
             # Resolve earlier pending commits before a new request can mutate this document.
@@ -289,6 +279,7 @@ class Service(EditingService):
                     doc['active'], doc['active_hash'], doc['bookmark'] = str(output), expected, name
                     with self.db:
                         self._put(doc)
+                        self._discard_analysis(document_id)
                         self.db.execute('UPDATE requests SET status=? WHERE doc=? AND id=?', ('done', document_id, request_id))
                     return result
 
@@ -296,7 +287,6 @@ class Service(EditingService):
         # A missing receipt is ambiguous after a crash: never blindly reinsert.
         if self.db.execute('SELECT 1 FROM requests WHERE doc=? AND status=?', (doc['document_id'], 'live_pending')).fetchone():
             raise WriterError('LIVE_RECOVERY_REQUIRED', '이 문서에 확인되지 않은 열린 창 작업이 있습니다. 결과와 복원용 사본을 먼저 확인하세요.')
-        self.check_environment()
         root = self.state / 'live-backups' / doc['document_id']
         root.mkdir(parents=True, exist_ok=True)
         key = hashlib.sha256(request_id.encode()).hexdigest()
@@ -310,11 +300,15 @@ class Service(EditingService):
                                       'blocks': blocks, 'backup': str(backup), 'receipt': str(receipt),
                                       'stage': str(Path(temp) / 'preflight.hwp')})
             except WriterError as e:
-                if e.code not in ('HANCOM_TIMEOUT', 'BACKEND_FAILED', 'LIVE_RECOVERY_REQUIRED'):
-                    with self.db: self.db.execute('DELETE FROM requests WHERE doc=? AND id=?', (doc['document_id'], request_id))
+                with self.db:
+                    if e.code in ('HANCOM_TIMEOUT', 'BACKEND_FAILED', 'LIVE_RECOVERY_REQUIRED'):
+                        self._discard_analysis(doc['document_id'])
+                    else:
+                        self.db.execute('DELETE FROM requests WHERE doc=? AND id=?', (doc['document_id'], request_id))
                 raise
         result = {**report, 'document_id': doc['document_id'], 'request_id': request_id, 'bookmark': name, 'counts': content.counts(blocks)}
         with self.db:
             doc['bookmark'] = name; self._put(doc)
+            self._discard_analysis(doc['document_id'])
             self.db.execute('UPDATE requests SET status=?,data=? WHERE doc=? AND id=?', ('done', dumps({'result': result}), doc['document_id'], request_id))
         return result
